@@ -7,6 +7,7 @@ A simple Flask API for terrain tiles manipulation.
 from flask import Flask, request, jsonify
 import os
 import json
+import re
 
 app = Flask(__name__)
 
@@ -16,6 +17,24 @@ DEMOS_DIR = os.path.join(os.path.dirname(__file__), 'demos')
 
 # Ensure Temp directory exists
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+
+def sanitize_filename(filename):
+    """
+    Sanitize filename to prevent path traversal attacks.
+    
+    Args:
+        filename: The filename to sanitize
+        
+    Returns:
+        A safe filename with only alphanumeric characters, underscores, and hyphens
+    """
+    # Remove any path separators and keep only safe characters
+    safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', filename)
+    # Ensure the filename is not empty after sanitization
+    if not safe_name:
+        safe_name = 'unnamed'
+    return safe_name
 
 
 @app.route('/')
@@ -59,8 +78,11 @@ def process_tile():
             if field not in data:
                 return jsonify({'error': f'Missing required field: {field}'}), 400
         
+        # Sanitize the filename to prevent path traversal
+        safe_name = sanitize_filename(data['name'])
+        
         # Save request to Temp directory for processing
-        temp_file = os.path.join(TEMP_DIR, f"{data['name']}_request.json")
+        temp_file = os.path.join(TEMP_DIR, f"{safe_name}_request.json")
         with open(temp_file, 'w') as f:
             json.dump(data, f, indent=2)
         
