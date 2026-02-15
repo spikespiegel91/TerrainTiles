@@ -102,4 +102,6 @@ def process_tile():
 
 
 if __name__ == '__main__':
+    # WARNING: debug=True and host='0.0.0.0' should only be used for development.
+    # For production, set debug=False and use a production WSGI server like gunicorn.
     app.run(debug=True, host='0.0.0.0', port=5000)

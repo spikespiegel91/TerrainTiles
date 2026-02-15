@@ -38,6 +38,8 @@ pip install -r requirements.txt
 
 ## Running the Application
 
+### Development Mode
+
 Start the Flask application:
 
 ```bash
@@ -45,6 +47,18 @@ python app.py
 ```
 
 The application will start on `http://localhost:5000`
+
+**Note:** The application runs in debug mode by default, which is suitable for development but should **NOT** be used in production. Debug mode can expose sensitive information and security vulnerabilities.
+
+### Production Deployment
+
+For production environments:
+1. Set `debug=False` in `app.py`
+2. Use a production WSGI server like gunicorn:
+   ```bash
+   pip install gunicorn
+   gunicorn -w 4 -b 0.0.0.0:5000 app:app
+   ```
 
 ## Making Requests
 
