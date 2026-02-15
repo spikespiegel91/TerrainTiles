@@ -4,10 +4,13 @@ TerrainTiles Flask Application
 A simple Flask API for terrain tiles manipulation.
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 import os
 import json
 import re
+
+from lib import surface, tiles
+
 
 app = Flask(__name__)
 
@@ -37,17 +40,37 @@ def sanitize_filename(filename):
     return safe_name
 
 
-@app.route('/')
+TILES_FOLDER = "Temp/tiles"
+
+@app.route("/tiles/<int:z>/<int:x>/<int:y>.png")
+def tile(z, x, y):
+    return send_from_directory(f"{TILES_FOLDER}/{z}/{x}", f"{y}.png")
+
+@app.route("/")
 def index():
-    """Root endpoint."""
-    return jsonify({
-        'message': 'Welcome to TerrainTiles API',
-        'endpoints': {
-            '/': 'This help message',
-            '/health': 'Health check endpoint',
-            '/tile': 'Process a terrain tile (POST)'
-        }
-    })
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Tile Map</title>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+        <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+        <style>#map{height:100vh;}</style>
+    </head>
+    <body>
+        <div id="map"></div>
+        <script>
+            var map = L.map('map').setView([0, 0], 2);
+            L.tileLayer('/tiles/{z}/{x}/{y}.png', {
+                maxZoom: 10,
+                minZoom: 8,
+                tileSize: 256,
+                noWrap: true,
+            }).addTo(map);
+        </script>
+    </body>
+    </html>
+    """
 
 
 @app.route('/health')
@@ -99,6 +122,97 @@ def process_tile():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/hello_plot')
+def get_hello_plot():
+    x,y,z = surface.get_grid_sample()
+    surface.plot_contour(x,y,z)
+    return
+
+@app.route('/save_new_raster')
+def save_new_raster():
+    
+    try:
+        tempPath = os.path.join(TEMP_DIR, 'new.tif')
+        
+        x,y,z = surface.get_grid_sample()
+        # print(z)
+        transform = surface.get_affine_transform(x,y)
+        surface.save_new_raster(z,transform, tempPath)
+
+        return jsonify({'status': 'new raster created'}), 200
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/show_new_raster')
+def show_new_raster():
+    try:
+        #tempPath = os.path.join(TEMP_DIR, 'new.tif')
+        # tempPath = os.path.join(DEMOS_DIR, 'venus2.tif')
+        tempPath = os.path.join(DEMOS_DIR, 'USGS_OPR_CA_SanFrancisco_B23_04300190.tif')
+
+        surface.plot_raster(tempPath)
+
+        return jsonify({'status': 'raster displayed'}), 200
+                        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    
+
+@app.route('/raster_info')
+def get_raster_info():
+    try:
+        # tempPath = os.path.join(TEMP_DIR, 'new.tif')
+        # tempPath = os.path.join(DEMOS_DIR, 'venus2.tif')
+        tempPath = os.path.join(DEMOS_DIR, 'USGS_OPR_CA_SanFrancisco_B23_04300190.tif')
+        raster_info = surface.get_raster_data(tempPath)
+
+        return jsonify(raster_info), 200
+                        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    
+@app.route('/get_raster_tiles')
+def get_raster_tiles():
+    try:
+        # tempPath = os.path.join(TEMP_DIR, 'new.tif')
+        # tempPath = os.path.join(DEMOS_DIR, 'galaxy.tif')
+        # tempPath = os.path.join(TEMP_DIR, 'venus2.tif')
+        tempPath = os.path.join(DEMOS_DIR, 'USGS_OPR_CA_SanFrancisco_B23_04300190.tif')
+       
+        output_dir = os.path.join(TEMP_DIR, 'tiles')
+        tiles.generate_tiles(tempPath, output_dir)
+        
+        return jsonify({'status': 'tiles generated', 'output_dir': output_dir}), 200
+                        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/elevation_decoder')
+def get_elevation_decoder():
+    """Get elevation decoder parameters for terrain RGB tiles."""
+    try:
+        decoder_params = tiles.get_elevation_decoder()
+        return jsonify({
+            'decoder': decoder_params,
+            'format': 'Mapbox Terrain RGB',
+            'precision': '~1cm',
+            'range': '-10000m to +6553.5m',
+            'usage': 'height = offset + (R * rScaler + G * gScaler + B * bScaler)'
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/tiles/<int:z>/<int:x>/<int:y>.png')
+def serve_tile(z, x, y):
+    """Serve individual terrain tiles."""
+    try:
+        tiles_dir = os.path.join(TEMP_DIR, 'tiles')
+        return send_from_directory(tiles_dir, f'{z}/{x}/{y}.png')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 404
 
 
 if __name__ == '__main__':
