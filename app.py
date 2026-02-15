@@ -42,10 +42,6 @@ def sanitize_filename(filename):
 
 TILES_FOLDER = "Temp/tiles"
 
-@app.route("/tiles/<int:z>/<int:x>/<int:y>.png")
-def tile(z, x, y):
-    return send_from_directory(f"{TILES_FOLDER}/{z}/{x}", f"{y}.png")
-
 @app.route("/")
 def index():
     return """
@@ -60,10 +56,10 @@ def index():
     <body>
         <div id="map"></div>
         <script>
-            var map = L.map('map').setView([0, 0], 2);
+            var map = L.map('map').setView([0, 0], 8);
             L.tileLayer('/tiles/{z}/{x}/{y}.png', {
-                maxZoom: 10,
-                minZoom: 8,
+                maxZoom: 12,
+                minZoom: 5,
                 tileSize: 256,
                 noWrap: true,
             }).addTo(map);
