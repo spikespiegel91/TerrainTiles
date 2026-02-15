@@ -6,6 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
+# Temp directory - ignore all files except .gitkeep
+Temp/*
+!Temp/.gitkeep
+
 # Distribution / packaging
 .Python
 build/
