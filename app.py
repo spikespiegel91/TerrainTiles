@@ -9,8 +9,11 @@ import os
 import json
 import re
 
+from matplotlib import pyplot
+
 from lib import surface, tiles
 
+from rasterio.windows import  Window, from_bounds, shape
 
 app = Flask(__name__)
 
@@ -209,6 +212,52 @@ def serve_tile(z, x, y):
         return send_from_directory(tiles_dir, f'{z}/{x}/{y}.png')
     except Exception as e:
         return jsonify({'error': str(e)}), 404
+
+
+@app.route('/serve_image')
+def serve_image_from_buffer():
+        # tempPath = os.path.join(DEMOS_DIR, 'USGS_OPR_CA_SanFrancisco_B23_04300190.tif')
+        # filename = 'USGS_OPR_CA_SanFrancisco_B23_04300190.tif'
+        filename = 'RGB.byte.tif'
+
+        metada = tiles.get_raster_metadata(filename, DEMOS_DIR)
+        # print('metada:', metada)
+        print('metada.driver:', metada.get('driver', None))
+        print('metada.crs:', metada.get('crs', None ))
+        print('metada.width x height:', metada.get('width', None), 'x', metada.get('height', None))
+        print('metada.bounds:', metada.get('bounds', None ))
+        print('metada.transform:', metada.get('transform', None ))
+
+        my_tile_shape = (256, 256)
+        # my_tile_shape = None 
+        my_tiles_windows = None  # use to show the whole raster as a single tile
+        #############################################################
+
+        # left, bottom, right, top = metada['bounds']
+
+        # x_width = right - left
+
+        # Nsize = 2
+        # step_diff = x_width / Nsize # use the same step for x and y to get a square tile
+
+        # left_q1, bottom_q1, right_q1, top_q1 = left, bottom, left + step_diff, bottom + step_diff
+
+        # q1_corners = (left_q1, bottom_q1, right_q1, top_q1)
+
+        # tile_q1 = from_bounds(*q1_corners, metada['transform'])
+
+        # my_tiles_windows = [tile_q1]
+        #############################################################
+       
+        data = tiles.read_tiledata_from_raster(filename, DEMOS_DIR, 1, tile_window=my_tiles_windows, out_shape=my_tile_shape)
+        # pyplot.imshow(data[0], cmap='pink')
+        
+        img_data0 = tiles.data2img(data[0])
+        pyplot.imshow(img_data0, cmap='pink')
+        pyplot.show()
+
+        return tiles.serve_image_from_buffer(img_data0)
+    
 
 
 if __name__ == '__main__':
