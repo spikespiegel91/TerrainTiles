@@ -191,15 +191,23 @@ def read_tiledata_from_raster(
     indexes: int | list = 1,
     tile_window: list[Window] | None = None,
     out_shape: tuple | None = (256, 256),
+    filepath: str | None = None,
     **kwargs,
 ) -> list[ndarray]:
 
     _valid_ext = ["tif"]
 
+    if filepath:
+        src_path = filepath
+        print(f"Reading from provided filepath: {filepath}")
+        filename = os.path.basename(filepath)
+        dirpath = os.path.dirname(filepath)
+    else:
+        src_path = get_filepath(dirpath, filename)
+        print(f"Constructed filepath from dirpath and filename: {src_path}")
+
     if not check_file_extension(filename, _valid_ext):
         raise TypeError("Invalid file extension.")
-
-    src_path = get_filepath(dirpath, filename)
 
     if not check_path(src_path):
         raise ValueError(" Invalid file, file does not exist")
@@ -209,7 +217,7 @@ def read_tiledata_from_raster(
     # out_shape = kwargs.get("out_shape", (256, 256))
 
     with rasterio.open(src_path) as src:
-        
+
         if (tile_window is None) or (out_shape is None):
             # la ventana de la tila tiene que ser cuadrada para
             # que el out_shape de 256x256 estandar de tilas funcione correctamente
@@ -218,12 +226,12 @@ def read_tiledata_from_raster(
             min_size = min(src_window.width, src_window.height)
 
             tile_window = [src_window.crop(min_size, min_size)]
-            out_shape = ( int(min_size), int(min_size) ) #shape(tile_window[0].round_shape())
+            out_shape = (int(min_size), int(min_size))  # shape(tile_window[0].round_shape())
 
         data = []
         for tile in tile_window:
             # print(f"Reading data for tile window: {tile}")
-        
+
             tile_data = src.read(
                 indexes=indexes,
                 window=tile,
@@ -252,6 +260,7 @@ def data2img(data: ndarray, img_encoder: any = None) -> Image.Image:
 def get_raster_metadata(
     filename: str,
     dirpath: str = "/Temp",
+    filepath: str | None = None,
 ) -> dict:
     _valid_ext = ["tif"]
 
@@ -273,11 +282,12 @@ def get_raster_metadata(
             "dtypes": src.dtypes,
             "count": src.count,
             "bounds": src.bounds,
-            "transform": src.transform, # Affine transformation matrix for georeferencing pixels to geographic coordinates
+            "transform": src.transform,  # Affine transformation matrix for georeferencing pixels to geographic coordinates
             "nodata": src.nodata if hasattr(src, "nodata") else None,
         }
 
     return metadata
+
 
 def Pixel2Projected(PixelCoords: list[tuple], transform):
     """
@@ -285,12 +295,12 @@ def Pixel2Projected(PixelCoords: list[tuple], transform):
 
     (0,0) -------> row
       |
-      |  img (pixel coordinates)                                                                         
-      |                                    y   
+      |  img (pixel coordinates)
+      |                                    y
       v col                               |       projected coordinates (x, y)
                                      (0,0)|____ x
 
-                                     
+
     Args:
         PixelCoords (list of tuples): List of pixel coordinates as (row, col)
         transform (Affine): Affine transformation matrix from rasterio
@@ -304,10 +314,11 @@ def Pixel2Projected(PixelCoords: list[tuple], transform):
 
     return ProjectedCoord
 
+
 def Projected2Pixel(ProjectedCoords: list[tuple], transform):
     """
     Convert projected coordinates (x, y) to pixel coordinates (row, col) using the affine transform.
-                        
+
     Args:
         ProjectedCoords (list of tuples): List of projected coordinates as (x, y)
         transform (Affine): Affine transformation matrix from rasterio
@@ -324,24 +335,121 @@ def Projected2Pixel(ProjectedCoords: list[tuple], transform):
 
 # TODO: metodo para trasnformar coordenadas entre sistemas de coordenadas,
 # necesario para pasar de las coordenadas de los bounds de nuestro raster al sistema
-# de coordendas geograficas (lat/lon) que espera mercantile para generar las tilas, 
-# y luego transformar de nuevo las coordenadas de cada tila al sistema de coordenadas 
+# de coordendas geograficas (lat/lon) que espera mercantile para generar las tilas,
+# y luego transformar de nuevo las coordenadas de cada tila al sistema de coordenadas
 # del raster para leer los datos correctos de cada tila
 #   x,y  a lon,lat  a x,y
 # rasterio.warp.transform_bounds()
+from rasterio.warp import transform_bounds as rio_transform_bounds
+
+def transform_bounds(src_crs, dst_crs, bounds):
+    return rio_transform_bounds(src_crs, dst_crs, *bounds)
+
+def bounds2Mercator(src_crs, bounds):
+    return rio_transform_bounds(src_crs, "EPSG:3857", *bounds)
+
+def bounds2Geographic(src_crs, bounds):
+    return rio_transform_bounds(src_crs, "EPSG:4326", *bounds)
+
+def boundsFromMercator(dst_crs, bounds):
+    return rio_transform_bounds("EPSG:3857", dst_crs, *bounds)
+
+def boundsFromGeographic(dst_crs, bounds):
+    return rio_transform_bounds("EPSG:4326", dst_crs, *bounds)
+
+def get_window_from_bounds(bounds, transform):
+    return from_bounds(*bounds, transform=transform)
+
+def get_Mercator_window_from_bounds(src_crs, src_bounds, mercator_transform):
+    mercator_bounds = bounds2Mercator(src_crs, src_bounds)
+    return from_bounds(*mercator_bounds, mercator_transform)
+
+def get_Geographic_window_from_bounds(src_crs, src_bounds, geographic_transform):
+    geographic_bounds = bounds2Geographic(src_crs, src_bounds)
+    return from_bounds(*geographic_bounds, geographic_transform)
 
 # metodo para transformar coordenadas simples?
 
-# TODO metodo para reproyectar completamente el raster a otro sistema de coordenadas 
+# TODO metodo para reproyectar completamente el raster a otro sistema de coordenadas
 # ( el de mercantile por ejemplo) y luego generar las tilas a partir de ese raster reproyectado,
 #  esto podria ser mas preciso y evitar problemas de distorsion en las tilas a menor zoom,
-#  aunque podria ser mas costoso computacionalmente. 
+#  aunque podria ser mas costoso computacionalmente.
 #
 # - Opcion 1: reproyectar el raster completo y guardarlo en disco
 # - Opcion 2: reproyectar al completo pero guardarlo en buffer y generar las tilas a partir de ese buffer en memoria, esto podria ser mas rapido pero podria consumir mucha memoria dependiendo del tamaño del raster
 #  en lugar de leer de disco con read_tiledata_from_raster() -
 #  --> leemos desde el buffer read_tiledata_from_rasterBuffer()
 
+
+from rasterio.warp import calculate_default_transform, reproject, Resampling
+
+
+def add_prefix_to_filename(filename: str, prefix: str) -> str:
+    filename_ext = filename.split(".")[-1]
+    filename_base = ".".join(filename.split(".")[:-1])
+    return f"{filename_base}_{prefix}.{filename_ext}"
+
+
+def reproject_raster(filename: str, dirpath: str = "/Temp", output_path: str = "/Temp", dst_crs: str = "EPSG:3857", out_prefix: str | None = None) -> str:
+
+    _valid_ext = ["tif"]
+
+    if not check_file_extension(filename, _valid_ext):
+        raise TypeError("Invalid file extension.")
+
+    src_path = get_filepath(dirpath, filename)
+
+    if not check_path(src_path):
+        raise ValueError(" Invalid file, file does not exist")
+
+    if not check_path(output_path):
+        raise ValueError(" Invalid output path, path does not exist")
+
+    if out_prefix is None:
+        out_prefix = dst_crs.split(":")[-1]
+
+    out_filename = add_prefix_to_filename(filename, out_prefix)
+    out_path = get_filepath(output_path, out_filename)
+
+    with rasterio.open(src_path) as src:
+
+        transform, width, height = calculate_default_transform(src.crs, dst_crs, src.width, src.height, *src.bounds)
+
+        kwargs = src.meta.copy()
+        kwargs.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
+
+        with rasterio.open(out_path, "w", **kwargs) as dst:
+            for i in range(1, src.count + 1):
+                reproject(
+                    source=rasterio.band(src, i),
+                    destination=rasterio.band(dst, i),
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=transform,
+                    dst_crs=dst_crs,
+                    resampling=rasterio.enums.Resampling.cubic,
+                )
+
+    return out_path, out_filename
+
+
+def reproject_raster2Mercator(
+    filename: str,
+    dirpath: str = "/Temp",
+    output_path: str = "/Temp",
+):
+    return reproject_raster(filename, dirpath, output_path, dst_crs="EPSG:3857", out_prefix='mercator')
+
+
+def reproject_raster2Geographic(
+    filename: str,
+    dirpath: str = "/Temp",
+    output_path: str = "/Temp",
+):
+    return reproject_raster(filename, dirpath, output_path, dst_crs="EPSG:4326", out_prefix='geographic')
+
+
 # TODO: metodo para coordinar la generacion de tilas, aseguranto que estan en el sistema
 # de coordenadas correcto, y que se guardan en la estructura de carpetas correcta (z/x/y.png)
 # ------> Class
+# opcion 2: metodo para servir dinamicante la tila pedida, sin guardar en disco.

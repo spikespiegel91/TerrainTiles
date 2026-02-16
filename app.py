@@ -10,10 +10,12 @@ import json
 import re
 
 from matplotlib import pyplot
+from mercantile import bounds
 
 from lib import surface, tiles
 
-from rasterio.windows import  Window, from_bounds, shape
+from rasterio.windows import  Window, from_bounds, shape, WindowMethodsMixin
+
 
 app = Flask(__name__)
 
@@ -232,21 +234,22 @@ def serve_image_from_buffer():
         # my_tile_shape = None 
         my_tiles_windows = None  # use to show the whole raster as a single tile
         #############################################################
+        # debug
 
-        # left, bottom, right, top = metada['bounds']
+        left, bottom, right, top = metada['bounds']
 
-        # x_width = right - left
+        x_width = right - left
 
-        # Nsize = 2
-        # step_diff = x_width / Nsize # use the same step for x and y to get a square tile
+        Nsize = 2
+        step_diff = x_width / Nsize # use the same step for x and y to get a square tile
 
-        # left_q1, bottom_q1, right_q1, top_q1 = left, bottom, left + step_diff, bottom + step_diff
+        left_q1, bottom_q1, right_q1, top_q1 = left, bottom, left + step_diff, bottom + step_diff
 
-        # q1_corners = (left_q1, bottom_q1, right_q1, top_q1)
+        q1_corners = (left_q1, bottom_q1, right_q1, top_q1)
 
-        # tile_q1 = from_bounds(*q1_corners, metada['transform'])
+        tile_q1 = from_bounds(*q1_corners, metada['transform'])
 
-        # my_tiles_windows = [tile_q1]
+        my_tiles_windows = [tile_q1]
         #############################################################
        
         data = tiles.read_tiledata_from_raster(filename, DEMOS_DIR, 1, tile_window=my_tiles_windows, out_shape=my_tile_shape)
@@ -256,7 +259,34 @@ def serve_image_from_buffer():
         pyplot.imshow(img_data0, cmap='pink')
         pyplot.show()
 
-        return tiles.serve_image_from_buffer(img_data0)
+        raster_m_path, filename_m = tiles.reproject_raster2Mercator(filename, DEMOS_DIR, TEMP_DIR)
+        raster_g_path, filename_g = tiles.reproject_raster2Geographic(filename, DEMOS_DIR, TEMP_DIR)
+
+        metada_m = tiles.get_raster_metadata(filename_m, TEMP_DIR)
+
+        # bound_from_source_to_m = tiles.bounds2Mercator(metada['crs'], *metada['bounds'])
+
+        # necesito calcular la ventana para el sistema de coordenadas de mercator 
+        bound_from_source_to_m = tiles.bounds2Mercator(metada['crs'], q1_corners)
+        # my_window_m = from_bounds(*bound_from_source_to_m, metada_m['transform'])
+        # esto podria ser una funcion
+        my_window_m = tiles.get_Mercator_window_from_bounds(metada['crs'], q1_corners, metada_m['transform'])
+
+        data_m = tiles.read_tiledata_from_raster(filename_m, TEMP_DIR, 1, tile_window=[my_window_m], out_shape=my_tile_shape)
+        
+        print('metada_m.crs:', metada_m.get('crs', None ))
+        print('metada_m.bounds:', metada_m.get('bounds', None ))
+        print('metada_m.transform:', metada_m.get('transform', None ))
+
+        print('bound_from_source_to_m:', bound_from_source_to_m)
+        
+        
+        img_data0_m = tiles.data2img(data_m[0])
+        pyplot.imshow(img_data0_m, cmap='pink')
+        pyplot.show()
+
+
+        return tiles.serve_image_from_buffer(img_data0_m)
     
 
 
