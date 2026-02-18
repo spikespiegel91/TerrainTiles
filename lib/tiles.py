@@ -257,7 +257,7 @@ def read_tiledata_from_raster(
             # print(f"Reading data for tile window: {tile}")
 
             tile_data = src.read(
-                indexes=indexes,
+                # indexes=indexes,
                 window=tile,
                 out_shape=out_shape,
                 boundless=boundless,  # Read data even if window is partially outside raster
@@ -275,14 +275,86 @@ def data2img(
     data: ndarray, encoder: None | Literal["terrain-rgb", "greyscale", "color"] = None
 ) -> Image.Image:
     # FIXME: se asume aqui que data solo tiene 1 canal? implementar encoders
+
+    _shape = data.shape
+   
     # Process only if there is non-empty data
     if data.any():
-        img_data = data.astype(np.uint8)
-        img = Image.fromarray(img_data)
+        if data.ndim == 0:
+            raise ValueError("Input array must have at least one dimension")
+
+        img_data = data
+
+        if img_data.ndim == 3 and img_data.shape[0] in (1, 3, 4):
+            # Rasterio returns band-first arrays; move channels to the end for PIL.
+            img_data = np.moveaxis(img_data, 0, -1)
+        elif img_data.ndim not in (2, 3):
+            raise ValueError("Unsupported array shape for image conversion")
+
+        channels = 1 if img_data.ndim == 2 else img_data.shape[-1]
+
+        if channels == 1:
+            mode = "L"
+        elif channels == 3:
+            mode = "RGB"
+        elif channels == 4:
+            mode = "RGBA"
+        else:
+            raise ValueError("Unsupported number of channels for PIL image")
+
+        if encoder == None:
+            img_data = np.clip(img_data, 0, 255).astype(np.uint8)
+            img = Image.fromarray(img_data, mode)
+
+        elif encoder == "terrain-rgb":
+            # TODO implementar la codificacion a formato terrain rgb
+            # img = Image.fromarray(img_data, mode)
+            # height = -10000 + ((R * 256 * 256 + G * 256 + B) * 0.1)
+            if channels == 1:
+                #FIXME
+                img = elevation2terrainRGB(data)
+
+            else:
+                raise ValueError("Input data must have 1 channel for terrain-rgb encoding")
+
+
+        elif encoder == "greyscale":
+            # TODO implementar la codificacion a formato greyscale
+            img_data = np.mean(img_data, axis=-1)
+            img = Image.fromarray(img_data.astype(np.uint8), "L")
+            
 
         return img
+#########################################
+def elevation2terrainRGB(elevation_data: ndarray) -> Image.Image:
+    
+    if elevation_data.ndim != 2:
+        raise ValueError("Input elevation data must be a 2D array")
+    
+    # Mapbox Terrain RGB encoding: height = -10000 + ((R * 256 * 256 + G * 256 + B) * 0.1)
+    height_encoded = np.clip((elevation_data + 10000) / 0.1, 0, 16777215).astype(
+        np.uint32
+    )
+    r = (height_encoded // (256 * 256)) % 256
+    g = (height_encoded // 256) % 256
+    b = height_encoded % 256
+    rgb_data = np.stack([r, g, b], axis=-1).astype(np.uint8)
 
+    return Image.fromarray(rgb_data, mode="RGB")
 
+def terrainRGB2elevation(rgb_image: Image.Image) -> ndarray:
+    
+    rgb_data = np.array(rgb_image)
+    r = rgb_data[:, :, 0].astype(np.uint32)
+    g = rgb_data[:, :, 1].astype(np.uint32)
+    b = rgb_data[:, :, 2].astype(np.uint32)
+
+    height_encoded = r * 256 * 256 + g * 256 + b
+    elevation_data = height_encoded * 0.1 - 10000
+
+    return elevation_data
+
+###########################################
 def get_raster_metadata(
     filename: str,
     dirpath: str = "/Temp",
@@ -431,6 +503,7 @@ def reproject_raster(
     output_path: str = "/Temp",
     dst_crs: str = "EPSG:3857",
     out_prefix: str | None = None,
+    useBuffer: bool = False,
 ) -> str:
 
     _valid_ext = ["tif"]
@@ -464,17 +537,36 @@ def reproject_raster(
         )
         # FIXME: este raster reproyectado se podria guardar en un buffer en memoria en lugar de en disco,
         # para luego generar las tilas a partir de ese buffer, esto podria ser mas rapido pero podria consumir mucha memoria dependiendo del tamaño del raster
-        with rasterio.open(out_path, "w", **kwargs) as dst:
-            for i in range(1, src.count + 1):
-                reproject(
-                    source=rasterio.band(src, i),
-                    destination=rasterio.band(dst, i),
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    dst_transform=transform,
-                    dst_crs=dst_crs,
-                    resampling=rasterio.enums.Resampling.cubic,
-                )
+        if useBuffer:
+            # TODO: revisar y arreglar esto para que funcione desde buffer
+
+            with rasterio.MemoryFile(filename=out_filename) as memfile:
+                with memfile.open(**kwargs) as dst:
+                    for i in range(1, src.count + 1):
+                        reproject(
+                            source=rasterio.band(src, i),
+                            destination=rasterio.band(dst, i),
+                            src_transform=src.transform,
+                            src_crs=src.crs,
+                            dst_transform=transform,
+                            dst_crs=dst_crs,
+                            resampling=rasterio.enums.Resampling.cubic,
+                        )
+                return memfile, out_filename
+
+        
+        else:
+            with rasterio.open(out_path, "w", **kwargs) as dst:
+                for i in range(1, src.count + 1):
+                    reproject(
+                        source=rasterio.band(src, i),
+                        destination=rasterio.band(dst, i),
+                        src_transform=src.transform,
+                        src_crs=src.crs,
+                        dst_transform=transform,
+                        dst_crs=dst_crs,
+                        resampling=rasterio.enums.Resampling.cubic,
+                    )
 
     return out_path, out_filename
 
@@ -592,32 +684,39 @@ class TileGenerator:
 
         all_windows = [t["window"] for t in self.tiles_data]
 
-        sliced_rasterdata = read_tiledata_from_raster(
-            self.out_raster_name,
-            self.output_dir,
-            indexes,
-            tile_window=all_windows,
-            out_shape=self._tile_shape,
-        )
+        max_batch_size = 100
+        num_windows = len(all_windows)
+        batch_size = min(max_batch_size, num_windows)
+        
+        for i in range(0, num_windows, batch_size):
+            batch_windows = all_windows[i : i + batch_size]
 
-        img_all = [
-            (index, self._encode_data(slicedata, encoder))
-            for index, slicedata in enumerate(sliced_rasterdata)
-        ]
+            sliced_rasterdata = read_tiledata_from_raster(
+                self.out_raster_name,
+                self.output_dir,
+                indexes,
+                tile_window=batch_windows,
+                out_shape=self._tile_shape,
+            )
 
-        for index, img in img_all:
+            img_all = [
+                (index, self._encode_data(slicedata, encoder))
+                for index, slicedata in enumerate(sliced_rasterdata)
+            ]
 
-            if img is None:
-                continue
+            for index, img in img_all:
 
-            t = self.tiles_data[index]
-            z = t["z"]
-            x = t["x"]
-            y = t["y"]
+                if img is None:
+                    continue
 
-            path = f"{self.output_dir}/tiles/{z}/{x}"
-            os.makedirs(path, exist_ok=True)
-            img.save(f"{path}/{y}.png")
+                t = self.tiles_data[index+i]
+                z = t["z"]
+                x = t["x"]
+                y = t["y"]
+
+                path = f"{self.output_dir}/tiles/{z}/{x}"
+                os.makedirs(path, exist_ok=True)
+                img.save(f"{path}/{y}.png")
 
     def reload_raster_data(self):
         self._reset_tiles_data()

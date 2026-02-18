@@ -62,7 +62,7 @@ def index():
     <body>
         <div id="map"></div>
         <script>
-            var map = L.map('map').setView([0, 0], 8);
+            var map = L.map('map').setView([8, 13], 5);
             L.tileLayer('/tiles/{z}/{x}/{y}.png', {
                 maxZoom: 12,
                 minZoom: 5,
