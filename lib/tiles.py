@@ -206,6 +206,97 @@ def get_filepath(dirpath: str, filename: str) -> str:
     return os.path.join(dirpath, filename)
 
 
+
+
+def read_image_from_path(
+    filename: str,
+    dirpath: str = "/Temp",
+    filepath: str | None = None, # optional
+    **kwargs,
+        ) -> ndarray:
+
+    _valid_ext = ["png"]
+ 
+    if filepath:
+        src_path = filepath
+        print(f"Reading from provided filepath: {filepath}")
+        filename = os.path.basename(filepath)
+        dirpath = os.path.dirname(filepath)
+    else:
+        src_path = get_filepath(dirpath, filename)
+        print(f"Constructed filepath from dirpath and filename: {src_path}")
+
+    if not check_file_extension(filename, _valid_ext):
+        raise TypeError("Invalid file extension.")
+
+    if not check_path(src_path):
+        raise ValueError(" Invalid file, file does not exist")
+    
+    #####################################################
+    with rasterio.open(src_path) as src:
+        print(f"Successfully opened image file: {src_path}")
+        data = src.read(**kwargs)
+
+    return data
+
+from rasterio.plot import show
+
+def data2GeoTif(data:ndarray, out_path:str, crs, latlongBounds = { }, nodata=None):
+    # FIXME_
+    # out_path = "Temp/Bani_Texture_geo.tif"
+    # X_MAX= -70.39734766708911
+    # X_MIN= -70.46993753408448
+    # Y_MAX= 18.37178547912261
+    # Y_MIN= 18.320038340921577
+
+    img_bands, img_h, img_w = data.shape
+    X_MIN = latlongBounds.get("X_MIN", -70.46993753408448)
+    X_MAX = latlongBounds.get("X_MAX", -70.39734766708911)
+    Y_MIN = latlongBounds.get("Y_MIN", 18.320038340921577)
+    Y_MAX = latlongBounds.get("Y_MAX", 18.37178547912261)
+
+    img_transform = rasterio.transform.from_bounds(
+        X_MIN,Y_MIN,X_MAX,Y_MAX,img_w,img_h
+        )
+
+    img_dtype = data.dtype
+
+    # img_crs = GEODETIC_CRS
+    _GEODETIC_CRS = 'EPSG:4326'
+
+    with rasterio.open(
+        out_path,
+        'w',
+        driver='GTiff',
+        height=img_h,
+        width=img_w,
+        count=4,
+        dtype=img_dtype,
+        crs= _GEODETIC_CRS,
+        transform=img_transform,
+    ) as dst:
+        # dst.write(data, 1)
+        # dst.write(r, 1)
+        # dst.write(g, 2)
+        # dst.write(b, 3)
+        #
+        dst.write(data)
+        # dst.write(data, 1)
+        # dst.write(data, 2)
+        # dst.write(data, 3)
+
+
+   
+
+    with rasterio.open(out_path) as src:
+        data = src.read()
+        show(data, transform=src.transform)
+        print(f"Successfully read and displayed georeferenced image: {out_path}")
+
+
+    return
+
+
 def read_tiledata_from_raster(
     filename: str,
     dirpath: str = "/Temp",
@@ -257,7 +348,7 @@ def read_tiledata_from_raster(
             # print(f"Reading data for tile window: {tile}")
 
             tile_data = src.read(
-                # indexes=indexes,
+                indexes=indexes,
                 window=tile,
                 out_shape=out_shape,
                 boundless=boundless,  # Read data even if window is partially outside raster
@@ -272,11 +363,14 @@ def read_tiledata_from_raster(
 
 
 def data2img(
-    data: ndarray, encoder: None | Literal["terrain-rgb", "greyscale", "color"] = None
+    data: ndarray, 
+    encoder: None | Literal["terrain-rgb", "greyscale", "color"] = None,
+    encoder_settings: dict | None = None
 ) -> Image.Image:
     # FIXME: se asume aqui que data solo tiene 1 canal? implementar encoders
 
     _shape = data.shape
+    #FIXME: si entra un tiff de una sola banda y no se indica index=1 en read_tile_data, entra un shape(1,1,1) que hay que collapsar par auwe PIL funcione
    
     # Process only if there is non-empty data
     if data.any():
@@ -303,41 +397,52 @@ def data2img(
             raise ValueError("Unsupported number of channels for PIL image")
 
         if encoder == None:
-            img_data = np.clip(img_data, 0, 255).astype(np.uint8)
-            img = Image.fromarray(img_data, mode)
+
+                # FIXME:  TENGO QUE PASAR LA ALTURA  TODAL PARA LA ESCALA !! necesarios parametros adicionales!!! para
+                # codificar de esta forma!! (encoder_Settings !!!  )
+                img_data = np.clip(img_data,0,255).astype(np.uint8)
+                img = Image.fromarray(img_data, mode)
 
         elif encoder == "terrain-rgb":
             # TODO implementar la codificacion a formato terrain rgb
             # img = Image.fromarray(img_data, mode)
             # height = -10000 + ((R * 256 * 256 + G * 256 + B) * 0.1)
-            if channels == 1:
-                #FIXME
-                img = elevation2terrainRGB(data)
-
-            else:
-                raise ValueError("Input data must have 1 channel for terrain-rgb encoding")
-
+            img = elevation2terrainRGB(data)
 
         elif encoder == "greyscale":
             # TODO implementar la codificacion a formato greyscale
-            img_data = np.mean(img_data, axis=-1)
+            offset = encoder_settings.get("offset", 0)
+            rScaler = encoder_settings.get("rScaler", 1)
+
+            img_data = np.clip((img_data - offset) * rScaler, 0, 255).astype(np.uint8)
+
             img = Image.fromarray(img_data.astype(np.uint8), "L")
             
 
         return img
+
+
+
+## todo READ
 #########################################
 def elevation2terrainRGB(elevation_data: ndarray) -> Image.Image:
     
     if elevation_data.ndim != 2:
         raise ValueError("Input elevation data must be a 2D array")
     
-    # Mapbox Terrain RGB encoding: height = -10000 + ((R * 256 * 256 + G * 256 + B) * 0.1)
-    height_encoded = np.clip((elevation_data + 10000) / 0.1, 0, 16777215).astype(
-        np.uint32
-    )
-    r = (height_encoded // (256 * 256)) % 256
-    g = (height_encoded // 256) % 256
-    b = height_encoded % 256
+    # Terrarium format encoding parameters:
+    # elevation = (R*256 + G  + B/256) - 32768
+
+    # offset = - 32768
+    # rScaler = 256
+    # gScaler = 1
+    # bScaler = 1/256
+
+    value = elevation_data + 32768
+    r = np.floor( value / 256 )
+    g = np.floor( value % 256 )
+    b = np.round( (value - np.floor(value)) * 256)
+
     rgb_data = np.stack([r, g, b], axis=-1).astype(np.uint8)
 
     return Image.fromarray(rgb_data, mode="RGB")
@@ -349,10 +454,7 @@ def terrainRGB2elevation(rgb_image: Image.Image) -> ndarray:
     g = rgb_data[:, :, 1].astype(np.uint32)
     b = rgb_data[:, :, 2].astype(np.uint32)
 
-    height_encoded = r * 256 * 256 + g * 256 + b
-    elevation_data = height_encoded * 0.1 - 10000
-
-    return elevation_data
+    return (r * 256 + g + b / 256) - 32768
 
 ###########################################
 def get_raster_metadata(
@@ -647,7 +749,8 @@ class TileGenerator:
         # self.Geo_4326_reprojected_tag = 'geo_4326'
         # self.Mercator_3857_reprojected_tag = 'mercator_3857'
         self.useBuffer = False
-        self._tile_shape = (256, 256)
+        # self._tile_shape = (256, 256)
+        self._tile_shape = (512, 512)
         self.zoom_levels = [1, 2, 3, 4]
 
         self.reload_raster_data()
@@ -676,6 +779,7 @@ class TileGenerator:
         self,
         indexes=1,
         encoder: None | Literal["terrain-rgb", "greyscale", "color"] = None,
+        encoder_settings: dict | None = None
     ):
         self._clean_tiles_output()
 
@@ -700,7 +804,7 @@ class TileGenerator:
             )
 
             img_all = [
-                (index, self._encode_data(slicedata, encoder))
+                (index, self._encode_data(slicedata, encoder, encoder_settings))
                 for index, slicedata in enumerate(sliced_rasterdata)
             ]
 
@@ -782,17 +886,18 @@ class TileGenerator:
         self,
         data: ndarray,
         encoder: None | Literal["terrain-rgb", "greyscale", "color"] = None,
+        settings: dict | None = None
     ) -> Image.Image:
 
         if encoder is None:
             return data2img(data)
-        elif encoder == "terrain_rgb":
+        elif encoder == "terrain-rgb":
             return data2img(
-                data, "terrain_rgb"
+                data, "terrain-rgb"
             )  # TODO implementar la codificacion a formato terrain rgb
         elif encoder == "greyscale":
             return data2img(
-                data, "greyscale"
+                data, "greyscale", settings
             )  # TODO implementar la codificacion a formato greyscale
         elif encoder == "color":
             return data2img(

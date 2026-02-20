@@ -64,7 +64,7 @@ def index():
         <script>
             var map = L.map('map').setView([8, 13], 5);
             L.tileLayer('/tiles/{z}/{x}/{y}.png', {
-                maxZoom: 12,
+                maxZoom: 20,
                 minZoom: 5,
                 tileSize: 256,
                 noWrap: true,
@@ -238,18 +238,44 @@ def generate_tiles():
 
         # FIXME: revisar encoders: guardado en color, bandas, rgb, codificacion para terrain-rgb
         my_channels = 1
-        my_encoder = None
+        # my_encoder = None
 
-        filename = "RGB.byte.tif"
+        my_encoder = "terrain-rgb"
+        settings = {}
+
+        # Z_MIN = 121.59725952148438
+        # Z_RANGE = 249.82308959960938
+        # HEIGHT_OFFSET =  1.02473
+        # my_encoder = "greyscale"
+        # settings= { 
+        #     "offset": Z_MIN,
+        #     "rScaler": (1 / Z_RANGE) * 255, 
+        #     "gScaler": 1, 
+        #     "bScaler": 1
+        # }
+
+
+        # filename = "RGB.byte.tif"
+        filename = "Bani.tif"
         tileGenerator = tiles.TileGenerator(_DEMOS_DIR, filename, _TEMP_DIR)
         # tileGenerator.set_zoom([1, 2, 3])
-        tileGenerator.set_zoom([1, 2, 3, 4, 5, 6, 7, 8, 9, 10,11,12,13,14])
-        tileGenerator.save_tiles_png(indexes=my_channels, encoder=my_encoder)
+        tileGenerator.set_zoom([5,12,13,14,15,16,17,18,19,20])
+        # tileGenerator.set_zoom([5,12,13,14,15,16,17,18])
+        # tileGenerator.set_zoom([1, 2, 3, 4, 5, 6, 7, 8, 9, 10,11,12,13,14])
+        tileGenerator.save_tiles_png(indexes=my_channels, encoder=my_encoder, encoder_settings=settings)
 
         _tiledata = tileGenerator.get_tiles_data()
         _tilecount = tileGenerator.get_tiles_count()
         _src_metadata = tileGenerator.get_src_metadata()
         _out_metadata = tileGenerator.get_out_metadata()
+
+        verbose = True
+        if verbose:
+            print(f"Tile data sample (first tile): {_tiledata[0] if _tiledata else 'No tile data'}")
+            print(f"Source metadata: {_src_metadata}")
+            print(f"Output metadata: {_out_metadata}")
+            print(f"Total tiles generated: {_tilecount}")
+
 
         return (
             jsonify(
