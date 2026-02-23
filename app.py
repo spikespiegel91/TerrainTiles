@@ -221,12 +221,58 @@ def get_elevation_decoder():
 def serve_tile(z, x, y):
     """Serve individual terrain tiles."""
     try:
-        #FIXME: temp_dir es parte del input, indica la direccion en donde estan las tilas
-        # necesitariamos la ruta de la app/temp y el directorio o UUID del proyecto en donde esten las tilas
         tiles_dir = os.path.join(TEMP_DIR, "tiles")
         return send_from_directory(tiles_dir, f"{z}/{x}/{y}.png")
     except Exception as e:
         return jsonify({"error": str(e)}), 404
+
+
+@app.route("/generate_elevation_tiles")
+def generate_elevation_tiles():
+    try:
+        _TEMP_DIR = os.path.join(os.path.dirname(__file__), "Temp")
+        _DEMOS_DIR = os.path.join(os.path.dirname(__file__), "demos")
+
+        filename = "RGB.byte.tif"
+        tileGenerator = tiles.TileGenerator(_DEMOS_DIR, filename, _TEMP_DIR)
+        tileGenerator.set_tiles_name("tiles_elevation")
+
+        tileGenerator.set_zoom([1, 2, 3])
+        tileGenerator.generate_elevation_tiles()
+
+        return jsonify({"status": "elevation tiles generated"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+@app.route("/generate_texture_tiles")
+def generate_texture_tiles():
+    try:
+        _TEMP_DIR = os.path.join(os.path.dirname(__file__), "Temp")
+        _DEMOS_DIR = os.path.join(os.path.dirname(__file__), "demos")
+
+        filename = "RGB.byte.tif"
+        tileGenerator = tiles.TileGenerator(_DEMOS_DIR, filename, _TEMP_DIR)
+        tileGenerator.set_tiles_name("tiles_texture")
+
+        # read from a .png texture
+        # filename = "bani.png"
+        # settings = { 
+        #     "X_MIN": -70.46993753408448,
+        #     "X_MAX": -70.39734766708911,
+        #     "Y_MIN": 18.320038340921577,
+        #     "Y_MAX": 18.37178547912261
+        #     }
+
+        # tileGenerator = tiles.TileGenerator(_DEMOS_DIR, filename, _TEMP_DIR, mode="png", settings = settings)
+
+        tileGenerator.set_zoom([1, 2, 3])
+        tileGenerator.generate_texture_tiles()
+
+        return jsonify({"status": "texture tiles generated"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/generate_tiles")
@@ -236,17 +282,18 @@ def generate_tiles():
         _TEMP_DIR = os.path.join(os.path.dirname(__file__), "Temp")
         _DEMOS_DIR = os.path.join(os.path.dirname(__file__), "demos")
 
-        # FIXME: revisar encoders: guardado en color, bandas, rgb, codificacion para terrain-rgb
-        my_channels = 1
-        # my_encoder = None
+        my_encoder = None
+        my_channels = None
+        # my_channels = [1, 2, 3]
 
-        my_encoder = "terrain-rgb"
+        # my_encoder = "terrain-rgb"
+        # my_channels = 1
         settings = {}
 
+        # my_encoder = "greyscale"
         # Z_MIN = 121.59725952148438
         # Z_RANGE = 249.82308959960938
         # HEIGHT_OFFSET =  1.02473
-        # my_encoder = "greyscale"
         # settings= { 
         #     "offset": Z_MIN,
         #     "rScaler": (1 / Z_RANGE) * 255, 
@@ -255,11 +302,11 @@ def generate_tiles():
         # }
 
 
-        # filename = "RGB.byte.tif"
-        filename = "Bani.tif"
+        filename = "RGB.byte.tif"
+        # filename = "Bani.tif"
         tileGenerator = tiles.TileGenerator(_DEMOS_DIR, filename, _TEMP_DIR)
-        # tileGenerator.set_zoom([1, 2, 3])
-        tileGenerator.set_zoom([5,12,13,14,15,16,17,18,19,20])
+        tileGenerator.set_zoom([1, 2, 3])
+        # tileGenerator.set_zoom([5,12,13,14,15,16,17,18,19,20])
         # tileGenerator.set_zoom([5,12,13,14,15,16,17,18])
         # tileGenerator.set_zoom([1, 2, 3, 4, 5, 6, 7, 8, 9, 10,11,12,13,14])
         tileGenerator.save_tiles_png(indexes=my_channels, encoder=my_encoder, encoder_settings=settings)

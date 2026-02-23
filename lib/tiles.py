@@ -1,300 +1,21 @@
 import mercantile
 import rasterio
-import rasterio.windows
 from rasterio.windows import Window
-
-from rasterio.windows import from_bounds, shape
+from rasterio.windows import from_bounds
 from PIL import Image
-import numpy as np
 import os
 from numpy import ndarray
 from typing import Literal
 
-def get_elevation_decoder():
-    """
-    Returns the elevation decoder parameters for Mapbox Terrain RGB format.
-    Use these parameters with deck.gl TerrainLayer or other terrain libraries.
-
-    Returns:
-        dict: Decoder parameters with rScaler, gScaler, bScaler, and offset
-    """
-    return {
-        "rScaler": 256 * 256 * 0.1,  # Red channel multiplier
-        "gScaler": 256 * 0.1,  # Green channel multiplier
-        "bScaler": 0.1,  # Blue channel multiplier
-        "offset": -10000,  # Height offset in meters
-    }
-
-
-def generate_tiles(file_path, output_dir, zoom_levels=[8, 9, 10]):
-
-    # tif = "Temp/new.tif"
-    # out = "Temp/tiles"
-
-    try:
-        print(f"Attempting to open raster file: {file_path}")
-        print(f"File exists: {os.path.exists(file_path)}")
-
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Raster file not found: {file_path}")
-
-        with rasterio.open(file_path) as src:
-            print(f"Successfully opened raster file")
-            print(f"Driver: {src.driver}")
-            print(f"CRS: {src.crs}")
-            print(f"Shape: {src.width} x {src.height}")
-            print(f"Data type: {src.dtypes}")
-            print(f"Number of bands: {src.count}")
-
-            bounds = src.bounds
-            print(f"Raster bounds: {bounds}")
-
-            # Test reading a small sample first
-            try:
-                print("Testing data read...")
-                test_data = src.read(1, window=rasterio.windows.Window(0, 0, 100, 100))
-                print(f"Test read successful. Sample shape: {test_data.shape}")
-                print(
-                    f"Sample data range: {np.nanmin(test_data):.2f} to {np.nanmax(test_data):.2f}"
-                )
-
-                # Check for no-data values
-                if hasattr(src, "nodata") and src.nodata is not None:
-                    print(f"NoData value: {src.nodata}")
-                    valid_data = (
-                        test_data[test_data != src.nodata]
-                        if src.nodata is not None
-                        else test_data
-                    )
-                    if len(valid_data) > 0:
-                        print(
-                            f"Valid data range: {np.nanmin(valid_data):.2f} to {np.nanmax(valid_data):.2f}"
-                        )
-                    else:
-                        raise ValueError("No valid data found in test sample")
-
-            except Exception as e:
-                raise RuntimeError(f"Failed to read test data from raster: {str(e)}")
-
-            # Get data range for information (but don't use for normalization)
-            try:
-                print("Reading full dataset for range analysis...")
-                global_data = src.read(1)
-
-                # Fill NoData values with 0 (sea level) before processing
-                if hasattr(src, "nodata") and src.nodata is not None:
-                    print(f"NoData value detected: {src.nodata}")
-                    nodata_count = np.sum(global_data == src.nodata)
-                    print(f"Filling {nodata_count} NoData pixels with 0m (sea level)")
-                    global_data = np.where(global_data == src.nodata, 0, global_data)
-
-                global_min = np.nanmin(global_data)
-                global_max = np.nanmax(global_data)
-
-                print(
-                    f"Elevation data range after NoData fill: {global_min:.2f}m to {global_max:.2f}m"
-                )
-                print(
-                    "Encoding using Mapbox Terrain RGB format (-10000m to +6553.5m range)"
-                )
-
-            except Exception as e:
-                raise RuntimeError(f"Failed to read full dataset: {str(e)}")
-
-            for z in zoom_levels:
-                print(f"Generating tiles for zoom level {z}")
-                tiles = mercantile.tiles(*bounds, zooms=[z])
-
-                tile_count = 0
-                for t in tiles:
-                    try:
-                        bbox = mercantile.bounds(t)
-
-                        window = from_bounds(
-                            bbox.west, bbox.south, bbox.east, bbox.north, src.transform
-                        )
-
-                        data = src.read(
-                            1,
-                            window=window,
-                            out_shape=(256, 256),
-                            resampling=rasterio.enums.Resampling.bilinear,
-                        )
-
-                        # Fill NoData values with 0m (sea level) for consistent encoding
-                        if hasattr(src, "nodata") and src.nodata is not None:
-                            data = np.where(data == src.nodata, 0, data)
-
-                        # print(f"Processing tile z={z}, x={t.x}, y={t.y} with data range: {np.nanmin(data):.2f}m to {np.nanmax(data):.2f}m")
-
-                        # Encode elevation using Mapbox Terrain RGB format
-                        # Formula: height = -10000 + ((R * 256 * 256 + G * 256 + B) * 0.1)
-                        # This gives us ~1cm precision over a -10000m to +6553.5m range
-                        if data.size > 0:
-                            # Convert elevation to the encoded integer format
-                            # height_encoded = (height + 10000) / 0.1
-                            encoded_heights = np.clip(
-                                (data + 10000) / 0.1, 0, 16777215
-                            ).astype(np.uint32)
-
-                            # Extract RGB components
-                            r = (encoded_heights // (256 * 256)) % 256
-                            g = (encoded_heights // 256) % 256
-                            b = encoded_heights % 256
-
-                            # Stack into RGB array
-                            rgb_data = np.stack([r, g, b], axis=-1).astype(np.uint8)
-                            img = Image.fromarray(rgb_data, mode="RGB")
-                        else:
-                            # Empty tile - sea level (0m) encoded
-                            sea_level_encoded = int((0 + 10000) / 0.1)
-                            r = (sea_level_encoded // (256 * 256)) % 256
-                            g = (sea_level_encoded // 256) % 256
-                            b = sea_level_encoded % 256
-                            rgb_data = np.full((256, 256, 3), [r, g, b], dtype=np.uint8)
-                            img = Image.fromarray(rgb_data, mode="RGB")
-
-                        path = f"{output_dir}/{z}/{t.x}"
-                        os.makedirs(path, exist_ok=True)
-                        img.save(f"{path}/{t.y}.png")
-
-                        tile_count += 1
-
-                    except Exception as tile_error:
-                        print(
-                            f"Error processing tile z={z}, x={t.x}, y={t.y}: {str(tile_error)}"
-                        )
-                        continue
-
-                print(f"Generated {tile_count} tiles for zoom level {z}")
-
-    except Exception as e:
-        print(f"Error in generate_tiles: {str(e)}")
-        import traceback
-
-        traceback.print_exc()
-        raise
-
-
-#####################################################
-from io import BytesIO
-from flask import send_file
-from PIL import Image
-import os
-
-
-def serve_image_from_buffer(img: Image.Image):
-    img_io = BytesIO()
-    img.save(img_io, "PNG")
-    img_io.seek(0)
-    return send_file(img_io, mimetype="image/png")
-
-
-def check_file_extension(filename: str, valid_extensions: list[str] = []) -> bool:
-    filename_ext = filename.split(".")[-1]
-
-    if filename_ext not in valid_extensions:
-        return False
-    return True
-
-
-def check_path(filepath: str) -> bool:
-    return os.path.exists(filepath)
-
-
-def get_filepath(dirpath: str, filename: str) -> str:
-    return os.path.join(dirpath, filename)
-
-
-
-
-def read_image_from_path(
-    filename: str,
-    dirpath: str = "/Temp",
-    filepath: str | None = None, # optional
-    **kwargs,
-        ) -> ndarray:
-
-    _valid_ext = ["png"]
- 
-    if filepath:
-        src_path = filepath
-        print(f"Reading from provided filepath: {filepath}")
-        filename = os.path.basename(filepath)
-        dirpath = os.path.dirname(filepath)
-    else:
-        src_path = get_filepath(dirpath, filename)
-        print(f"Constructed filepath from dirpath and filename: {src_path}")
-
-    if not check_file_extension(filename, _valid_ext):
-        raise TypeError("Invalid file extension.")
-
-    if not check_path(src_path):
-        raise ValueError(" Invalid file, file does not exist")
-    
-    #####################################################
-    with rasterio.open(src_path) as src:
-        print(f"Successfully opened image file: {src_path}")
-        data = src.read(**kwargs)
-
-    return data
-
-from rasterio.plot import show
-
-def data2GeoTif(data:ndarray, out_path:str, crs, latlongBounds = { }, nodata=None):
-    # FIXME_
-    # out_path = "Temp/Bani_Texture_geo.tif"
-    # X_MAX= -70.39734766708911
-    # X_MIN= -70.46993753408448
-    # Y_MAX= 18.37178547912261
-    # Y_MIN= 18.320038340921577
-
-    img_bands, img_h, img_w = data.shape
-    X_MIN = latlongBounds.get("X_MIN", -70.46993753408448)
-    X_MAX = latlongBounds.get("X_MAX", -70.39734766708911)
-    Y_MIN = latlongBounds.get("Y_MIN", 18.320038340921577)
-    Y_MAX = latlongBounds.get("Y_MAX", 18.37178547912261)
-
-    img_transform = rasterio.transform.from_bounds(
-        X_MIN,Y_MIN,X_MAX,Y_MAX,img_w,img_h
-        )
-
-    img_dtype = data.dtype
-
-    # img_crs = GEODETIC_CRS
-    _GEODETIC_CRS = 'EPSG:4326'
-
-    with rasterio.open(
-        out_path,
-        'w',
-        driver='GTiff',
-        height=img_h,
-        width=img_w,
-        count=4,
-        dtype=img_dtype,
-        crs= _GEODETIC_CRS,
-        transform=img_transform,
-    ) as dst:
-        # dst.write(data, 1)
-        # dst.write(r, 1)
-        # dst.write(g, 2)
-        # dst.write(b, 3)
-        #
-        dst.write(data)
-        # dst.write(data, 1)
-        # dst.write(data, 2)
-        # dst.write(data, 3)
-
-
-   
-
-    with rasterio.open(out_path) as src:
-        data = src.read()
-        show(data, transform=src.transform)
-        print(f"Successfully read and displayed georeferenced image: {out_path}")
-
-
-    return
+from .io import *
+from .carto import (
+    bounds2Geographic,
+    boundsFromGeographic,
+    get_raster_metadata,
+    get_Geographic_window_from_bounds,
+    reproject_raster2Geographic,
+)
+from .encoders import data2img, data2GeoTif
 
 
 def read_tiledata_from_raster(
@@ -362,343 +83,6 @@ def read_tiledata_from_raster(
     return data
 
 
-def data2img(
-    data: ndarray, 
-    encoder: None | Literal["terrain-rgb", "greyscale", "color"] = None,
-    encoder_settings: dict | None = None
-) -> Image.Image:
-    # FIXME: se asume aqui que data solo tiene 1 canal? implementar encoders
-
-    _shape = data.shape
-    #FIXME: si entra un tiff de una sola banda y no se indica index=1 en read_tile_data, entra un shape(1,1,1) que hay que collapsar par auwe PIL funcione
-   
-    # Process only if there is non-empty data
-    if data.any():
-        if data.ndim == 0:
-            raise ValueError("Input array must have at least one dimension")
-
-        img_data = data
-
-        if img_data.ndim == 3 and img_data.shape[0] in (1, 3, 4):
-            # Rasterio returns band-first arrays; move channels to the end for PIL.
-            img_data = np.moveaxis(img_data, 0, -1)
-        elif img_data.ndim not in (2, 3):
-            raise ValueError("Unsupported array shape for image conversion")
-
-        channels = 1 if img_data.ndim == 2 else img_data.shape[-1]
-
-        if channels == 1:
-            mode = "L"
-        elif channels == 3:
-            mode = "RGB"
-        elif channels == 4:
-            mode = "RGBA"
-        else:
-            raise ValueError("Unsupported number of channels for PIL image")
-
-        if encoder == None:
-
-                # FIXME:  TENGO QUE PASAR LA ALTURA  TODAL PARA LA ESCALA !! necesarios parametros adicionales!!! para
-                # codificar de esta forma!! (encoder_Settings !!!  )
-                img_data = np.clip(img_data,0,255).astype(np.uint8)
-                img = Image.fromarray(img_data, mode)
-
-        elif encoder == "terrain-rgb":
-            # TODO implementar la codificacion a formato terrain rgb
-            # img = Image.fromarray(img_data, mode)
-            # height = -10000 + ((R * 256 * 256 + G * 256 + B) * 0.1)
-            img = elevation2terrainRGB(data)
-
-        elif encoder == "greyscale":
-            # TODO implementar la codificacion a formato greyscale
-            offset = encoder_settings.get("offset", 0)
-            rScaler = encoder_settings.get("rScaler", 1)
-
-            img_data = np.clip((img_data - offset) * rScaler, 0, 255).astype(np.uint8)
-
-            img = Image.fromarray(img_data.astype(np.uint8), "L")
-            
-
-        return img
-
-
-
-## todo READ
-#########################################
-def elevation2terrainRGB(elevation_data: ndarray) -> Image.Image:
-    
-    if elevation_data.ndim != 2:
-        raise ValueError("Input elevation data must be a 2D array")
-    
-    # Terrarium format encoding parameters:
-    # elevation = (R*256 + G  + B/256) - 32768
-
-    # offset = - 32768
-    # rScaler = 256
-    # gScaler = 1
-    # bScaler = 1/256
-
-    value = elevation_data + 32768
-    r = np.floor( value / 256 )
-    g = np.floor( value % 256 )
-    b = np.round( (value - np.floor(value)) * 256)
-
-    rgb_data = np.stack([r, g, b], axis=-1).astype(np.uint8)
-
-    return Image.fromarray(rgb_data, mode="RGB")
-
-def terrainRGB2elevation(rgb_image: Image.Image) -> ndarray:
-    
-    rgb_data = np.array(rgb_image)
-    r = rgb_data[:, :, 0].astype(np.uint32)
-    g = rgb_data[:, :, 1].astype(np.uint32)
-    b = rgb_data[:, :, 2].astype(np.uint32)
-
-    return (r * 256 + g + b / 256) - 32768
-
-###########################################
-def get_raster_metadata(
-    filename: str,
-    dirpath: str = "/Temp",
-    filepath: str | None = None,
-) -> dict:
-    _valid_ext = ["tif"]
-
-    if not check_file_extension(filename, _valid_ext):
-        raise TypeError("Invalid file extension.")
-
-    src_path = get_filepath(dirpath, filename)
-
-    if not check_path(src_path):
-        raise ValueError(" Invalid file, file does not exist")
-
-    with rasterio.open(src_path) as src:
-
-        metadata = {
-            "driver": src.driver,
-            "crs": src.crs,
-            "width": src.width,
-            "height": src.height,
-            "dtypes": src.dtypes,
-            "count": src.count,
-            "bounds": src.bounds,
-            "transform": src.transform,  # Affine transformation matrix for georeferencing pixels to geographic coordinates
-            "nodata": src.nodata if hasattr(src, "nodata") else None,
-        }
-
-    return metadata
-
-
-def Pixel2Projected(PixelCoords: list[tuple], transform):
-    """
-    Convert pixel coordinates (row, col) to projected coordinates (x, y) using the affine transform.
-
-    (0,0) -------> row
-      |
-      |  img (pixel coordinates)
-      |                                    y
-      v col                               |       projected coordinates (x, y)
-                                     (0,0)|____ x
-
-
-    Args:
-        PixelCoords (list of tuples): List of pixel coordinates as (row, col)
-        transform (Affine): Affine transformation matrix from rasterio
-
-    Returns:
-        list of tuples: List of projected coordinates as (x, y)
-    """
-    transformer = rasterio.transform.AffineTransformer(transform)
-
-    ProjectedCoord = [transformer.xy(row, col) for row, col in PixelCoords]
-
-    return ProjectedCoord
-
-
-def Projected2Pixel(ProjectedCoords: list[tuple], transform):
-    """
-    Convert projected coordinates (x, y) to pixel coordinates (row, col) using the affine transform.
-
-    Args:
-        ProjectedCoords (list of tuples): List of projected coordinates as (x, y)
-        transform (Affine): Affine transformation matrix from rasterio
-
-    Returns:
-        list of tuples: List of pixel coordinates as (row, col)
-    """
-    transformer = rasterio.transform.AffineTransformer(transform)
-
-    PixelCoord = [transformer.rowcol(x, y) for x, y in ProjectedCoords]
-
-    return PixelCoord
-
-
-# TODO: metodo para trasnformar coordenadas entre sistemas de coordenadas,
-# necesario para pasar de las coordenadas de los bounds de nuestro raster al sistema
-# de coordendas geograficas (lat/lon) que espera mercantile para generar las tilas,
-# y luego transformar de nuevo las coordenadas de cada tila al sistema de coordenadas
-# del raster para leer los datos correctos de cada tila
-#   x,y  a lon,lat  a x,y
-# rasterio.warp.transform_bounds()
-from rasterio.warp import transform_bounds as rio_transform_bounds
-
-
-def transform_bounds(src_crs, dst_crs, bounds):
-    return rio_transform_bounds(src_crs, dst_crs, *bounds)
-
-
-def bounds2Mercator(src_crs, bounds):
-    return rio_transform_bounds(src_crs, "EPSG:3857", *bounds)
-
-
-def bounds2Geographic(src_crs, bounds):
-    return rio_transform_bounds(src_crs, "EPSG:4326", *bounds)
-
-
-def boundsFromMercator(dst_crs, bounds):
-    return rio_transform_bounds("EPSG:3857", dst_crs, *bounds)
-
-
-def boundsFromGeographic(dst_crs, bounds):
-    return rio_transform_bounds("EPSG:4326", dst_crs, *bounds)
-
-
-def get_window_from_bounds(bounds, transform):
-    return from_bounds(*bounds, transform=transform)
-
-
-def get_Mercator_window_from_bounds(src_crs, src_bounds, mercator_transform):
-    mercator_bounds = bounds2Mercator(src_crs, src_bounds)
-    return from_bounds(*mercator_bounds, mercator_transform)
-
-
-def get_Geographic_window_from_bounds(src_crs, src_bounds, geographic_transform):
-    geographic_bounds = bounds2Geographic(src_crs, src_bounds)
-    return from_bounds(*geographic_bounds, geographic_transform)
-
-
-# metodo para transformar coordenadas simples?
-
-# TODO metodo para reproyectar completamente el raster a otro sistema de coordenadas
-# ( el de mercantile por ejemplo) y luego generar las tilas a partir de ese raster reproyectado,
-#  esto podria ser mas preciso y evitar problemas de distorsion en las tilas a menor zoom,
-#  aunque podria ser mas costoso computacionalmente.
-#
-# - Opcion 1: reproyectar el raster completo y guardarlo en disco
-# - Opcion 2: reproyectar al completo pero guardarlo en buffer y generar las tilas a partir de ese buffer en memoria, esto podria ser mas rapido pero podria consumir mucha memoria dependiendo del tamaño del raster
-#  en lugar de leer de disco con read_tiledata_from_raster() -
-#  --> leemos desde el buffer read_tiledata_from_rasterBuffer()
-
-
-from rasterio.warp import calculate_default_transform, reproject, Resampling
-
-
-def add_prefix_to_filename(filename: str, prefix: str) -> str:
-    filename_ext = filename.split(".")[-1]
-    filename_base = ".".join(filename.split(".")[:-1])
-    return f"{filename_base}_{prefix}.{filename_ext}"
-
-
-def reproject_raster(
-    filename: str,
-    dirpath: str = "/Temp",
-    output_path: str = "/Temp",
-    dst_crs: str = "EPSG:3857",
-    out_prefix: str | None = None,
-    useBuffer: bool = False,
-) -> str:
-
-    _valid_ext = ["tif"]
-
-    if not check_file_extension(filename, _valid_ext):
-        raise TypeError("Invalid file extension.")
-
-    src_path = get_filepath(dirpath, filename)
-
-    if not check_path(src_path):
-        raise ValueError(" Invalid file, file does not exist")
-
-    if not check_path(output_path):
-        raise ValueError(" Invalid output path, path does not exist")
-
-    if out_prefix is None:
-        out_prefix = dst_crs.split(":")[-1]
-
-    out_filename = add_prefix_to_filename(filename, out_prefix)
-    out_path = get_filepath(output_path, out_filename)
-
-    with rasterio.open(src_path) as src:
-
-        transform, width, height = calculate_default_transform(
-            src.crs, dst_crs, src.width, src.height, *src.bounds
-        )
-
-        kwargs = src.meta.copy()
-        kwargs.update(
-            {"crs": dst_crs, "transform": transform, "width": width, "height": height}
-        )
-        # FIXME: este raster reproyectado se podria guardar en un buffer en memoria en lugar de en disco,
-        # para luego generar las tilas a partir de ese buffer, esto podria ser mas rapido pero podria consumir mucha memoria dependiendo del tamaño del raster
-        if useBuffer:
-            # TODO: revisar y arreglar esto para que funcione desde buffer
-
-            with rasterio.MemoryFile(filename=out_filename) as memfile:
-                with memfile.open(**kwargs) as dst:
-                    for i in range(1, src.count + 1):
-                        reproject(
-                            source=rasterio.band(src, i),
-                            destination=rasterio.band(dst, i),
-                            src_transform=src.transform,
-                            src_crs=src.crs,
-                            dst_transform=transform,
-                            dst_crs=dst_crs,
-                            resampling=rasterio.enums.Resampling.cubic,
-                        )
-                return memfile, out_filename
-
-        
-        else:
-            with rasterio.open(out_path, "w", **kwargs) as dst:
-                for i in range(1, src.count + 1):
-                    reproject(
-                        source=rasterio.band(src, i),
-                        destination=rasterio.band(dst, i),
-                        src_transform=src.transform,
-                        src_crs=src.crs,
-                        dst_transform=transform,
-                        dst_crs=dst_crs,
-                        resampling=rasterio.enums.Resampling.cubic,
-                    )
-
-    return out_path, out_filename
-
-
-def reproject_raster2Mercator(
-    filename: str,
-    dirpath: str = "/Temp",
-    output_path: str = "/Temp",
-):
-    return reproject_raster(
-        filename, dirpath, output_path, dst_crs="EPSG:3857", out_prefix="mercator_3857"
-    )
-
-
-def reproject_raster2Geographic(
-    filename: str,
-    dirpath: str = "/Temp",
-    output_path: str = "/Temp",
-):
-    return reproject_raster(
-        filename, dirpath, output_path, dst_crs="EPSG:4326", out_prefix="geo_4326"
-    )
-
-
-# TODO: metodo para coordinar la generacion de tilas, aseguranto que estan en el sistema
-# de coordenadas correcto, y que se guardan en la estructura de carpetas correcta (z/x/y.png)
-# ------> Class
-# opcion 2: metodo para servir dinamicante la tila pedida, sin guardar en disco.
-
-
 def get_tiles(bounds, bounds_crs, zoom_levels=[1, 2]):
     # GEODETIC_CRS = "EPSG:4326"
     # geodetic_bounds = transform_bounds(bounds_crs, GEODETIC_CRS, bounds)
@@ -708,9 +92,7 @@ def get_tiles(bounds, bounds_crs, zoom_levels=[1, 2]):
 
     tiles = []
     for z in zoom_levels:
-        tiles_z = mercantile.tiles(
-            geo_bounds[0], geo_bounds[1], geo_bounds[2], geo_bounds[3], zooms=[z]
-        )
+        tiles_z = mercantile.tiles(geo_bounds[0], geo_bounds[1], geo_bounds[2], geo_bounds[3], zooms=[z])
 
         tiles.extend(tiles_z)
 
@@ -739,12 +121,24 @@ def get_tiles(bounds, bounds_crs, zoom_levels=[1, 2]):
     return tile_data
 
 
-
 class TileGenerator:
-    def __init__(self, raster_dir: str, raster_name: str, output_dir: str):
+    def __init__(
+        self, raster_dir: str, filename: str, output_dir: str, mode: Literal["tif", "png"] = "tif", settings: dict = {}
+    ):
+        """_summary_
+
+        Args:
+           settings (dict, optional): _description_. Defaults to {}.
+            {x_MIN, x_MAX, y_MIN, y_MAX} in geographic coordinates for raster data extraction from texture png mode
+
+        """
         self.raster_dir = raster_dir
-        self.raster_name = raster_name
+        self.filename = filename
+        self.mode = mode
+
         self.output_dir = output_dir
+        self.tiles_name = "tiles"
+        self.tiles_data = None
         # self.raster_path = get_filepath(raster_dir, raster_name)
         # self.Geo_4326_reprojected_tag = 'geo_4326'
         # self.Mercator_3857_reprojected_tag = 'mercator_3857'
@@ -752,11 +146,28 @@ class TileGenerator:
         # self._tile_shape = (256, 256)
         self._tile_shape = (512, 512)
         self.zoom_levels = [1, 2, 3, 4]
+        self.settings = settings
+
+        self._check_mode()
+        self._update_tiles_path()
+
+        # si es png, reload_aster_data tiene que transformar primero de png a tif
+        if self.mode == "png":
+            self.texture_name = filename  # .png
+            self.raster_name = change_file_extension(self.texture_name, "tif")
+
+        elif self.mode == "tif":
+            self.texture_name = None
+            self.raster_name = filename  # .tif
 
         self.reload_raster_data()
 
     def set_zoom(self, zoom_levels: list[int]):
         self.zoom_levels = zoom_levels
+
+    def set_tiles_name(self, name: str):
+        self.tiles_name = name
+        self._update_tiles_path()
 
     def get_src_metadata(self):
         return self.src_raster_metada
@@ -774,13 +185,39 @@ class TileGenerator:
             self._get_tiles_data()
         return len(self.tiles_data)
 
-
+    
+    def generate_elevation_tiles(self):
+        self.save_tiles_png(indexes=1, encoder="terrain-rgb")
+        return
+    
+    def generate_texture_tiles(self):
+        self.save_tiles_png(indexes=None, encoder=None)
+        return
+    
     def save_tiles_png(
         self,
-        indexes=1,
-        encoder: None | Literal["terrain-rgb", "greyscale", "color"] = None,
-        encoder_settings: dict | None = None
+        indexes=1, # 1, None, [1,2,3]
+        encoder: None | Literal["terrain-rgb", "greyscale"] = None,
+        encoder_settings: dict | None = None,
     ):
+        """_summary_
+
+        Args:
+            None (_type_): _description_
+            indexes (int, optional): _description_. Defaults to 1.
+            encoder_settings (dict | None, optional): _description_. Defaults to None.
+
+            For elevation data: 
+            indexes = 1
+            encoder = "terrain-rgb"
+
+            For texture layer:
+            indexes = [1,2,3] or None (all bands)
+            encoder = None
+
+
+        """
+        
         self._clean_tiles_output()
 
         if self.tiles_data is None:
@@ -791,7 +228,7 @@ class TileGenerator:
         max_batch_size = 100
         num_windows = len(all_windows)
         batch_size = min(max_batch_size, num_windows)
-        
+
         for i in range(0, num_windows, batch_size):
             batch_windows = all_windows[i : i + batch_size]
 
@@ -813,23 +250,26 @@ class TileGenerator:
                 if img is None:
                     continue
 
-                t = self.tiles_data[index+i]
+                t = self.tiles_data[index + i]
                 z = t["z"]
                 x = t["x"]
                 y = t["y"]
 
-                path = f"{self.output_dir}/tiles/{z}/{x}"
+                path = f"{self.tiles_path}/{z}/{x}"
                 os.makedirs(path, exist_ok=True)
                 img.save(f"{path}/{y}.png")
 
     def reload_raster_data(self):
         self._reset_tiles_data()
         try:
-            self.src_raster_metada = get_raster_metadata(
-                self.raster_name, self.raster_dir
-            )
-            # print(f"Raster metadata: {self.src_raster_metada}")
-            self._reproject_lnglat_4326()
+
+            if self.mode == "png":
+                self._raster_from_texture_4326()
+
+            elif self.mode == "tif":
+                self.src_raster_metada = get_raster_metadata(self.raster_name, self.raster_dir)
+                # print(f"Raster metadata: {self.src_raster_metada}")
+                self._reproject_lnglat_4326()
 
         except Exception as e:
             raise RuntimeError(f"Failed to read raster metadata: {str(e)}")
@@ -846,6 +286,32 @@ class TileGenerator:
         except Exception as e:
             raise RuntimeError(f"Failed to extract bounds from metadata: {str(e)}")
 
+    def _raster_from_texture_4326(self):
+        latlongBounds = {
+            "X_MIN": self.settings.get("X_MIN", None),
+            "X_MAX": self.settings.get("X_MAX", None),
+            "Y_MIN": self.settings.get("Y_MIN", None),
+            "Y_MAX": self.settings.get("Y_MAX", None),
+        }
+
+        if None in latlongBounds.values():
+            raise ValueError("Missing geographic bounds in settings for texture png mode")
+
+        imgData = read_image_from_path(self.texture_name, self.raster_dir)
+
+        if self.useBuffer:
+            # TODO
+            # Implement logic to reproject raster to geographic coordinates and store in buffer
+            pass
+        else:
+            self.out_raster_name = self.raster_name
+            self.out_raster_path = os.path.join(self.output_dir, self.raster_name)
+
+            self.out_raster_metadata = data2GeoTif(imgData, self.out_raster_path, latlongBounds)
+            self.BufferData = None
+
+        return
+
     def _reproject_lnglat_4326(self):
 
         if self.useBuffer:
@@ -856,9 +322,7 @@ class TileGenerator:
             self.out_raster_path, self.out_raster_name = reproject_raster2Geographic(
                 self.raster_name, self.raster_dir, self.output_dir
             )
-            self.out_raster_metadata = get_raster_metadata(
-                self.out_raster_name, self.output_dir
-            )
+            self.out_raster_metadata = get_raster_metadata(self.out_raster_name, self.output_dir)
             self.BufferData = None
 
     def _get_tiles_data(self):
@@ -874,9 +338,7 @@ class TileGenerator:
                 tile_bounds.east,
                 tile_bounds.north,
             )
-            tile_window = get_Geographic_window_from_bounds(
-                bounds_crs, bounds, affine_coord2pixel
-            )
+            tile_window = get_Geographic_window_from_bounds(bounds_crs, bounds, affine_coord2pixel)
 
             tiles_data[index].update({"window": tile_window})
 
@@ -886,38 +348,33 @@ class TileGenerator:
         self,
         data: ndarray,
         encoder: None | Literal["terrain-rgb", "greyscale", "color"] = None,
-        settings: dict | None = None
+        settings: dict | None = None,
     ) -> Image.Image:
 
-        if encoder is None:
-            return data2img(data)
-        elif encoder == "terrain-rgb":
-            return data2img(
-                data, "terrain-rgb"
-            )  # TODO implementar la codificacion a formato terrain rgb
-        elif encoder == "greyscale":
-            return data2img(
-                data, "greyscale", settings
-            )  # TODO implementar la codificacion a formato greyscale
-        elif encoder == "color":
-            return data2img(
-                data, "color"
-            )  # TODO implementar la codificacion a formato color
+        return data2img(data, encoder, settings)
 
-        pass
+    def _update_tiles_path(self):
+        self.tiles_path = os.path.join(self.output_dir, self.tiles_name)
 
     def _reset_tiles_data(self):
         self.tiles_data = None
 
     def _clean_tiles_output(self):
-        tiles_path = f"{self.output_dir}/tiles"
-        if os.path.exists(tiles_path):
-            for root, dirs, files in os.walk(tiles_path, topdown=False):
+        # tiles_path = f"{self.output_dir}/tiles"
+
+        if os.path.exists(self.tiles_path):
+            for root, dirs, files in os.walk(self.tiles_path, topdown=False):
                 for name in files:
                     os.remove(os.path.join(root, name))
                 for name in dirs:
                     os.rmdir(os.path.join(root, name))
-            print(f"Cleaned existing tiles in {tiles_path}")
+            print(f"Cleaned existing tiles in {self.tiles_path}")
         else:
-            print(f"No existing tiles to clean in {tiles_path}")
+            print(f"No existing tiles to clean in {self.tiles_path}")
+
+
+    def _check_mode(self):
+        validExtension = check_file_extension(self.filename, self.mode)
+        if not validExtension:
+            raise ValueError(f"Invalid mode: {self.mode} for file: {self.filename}")
 
