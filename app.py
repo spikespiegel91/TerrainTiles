@@ -16,6 +16,8 @@ from lib import surface, tiles
 
 from rasterio.windows import Window, from_bounds, shape, WindowMethodsMixin
 
+import sqlite3
+from lib.io import *
 
 app = Flask(__name__)
 
@@ -48,7 +50,7 @@ def sanitize_filename(filename):
 TILES_FOLDER = "Temp/tiles"
 
 
-@app.route("/local")
+@app.route("/tiles")
 def index():
     return """
     <!DOCTYPE html>
@@ -64,6 +66,32 @@ def index():
         <script>
             var map = L.map('map').setView([8, 13], 5);
             L.tileLayer('/tiles/{z}/{x}/{y}.png', {
+                maxZoom: 20,
+                minZoom: 5,
+                tileSize: 256,
+                noWrap: true,
+            }).addTo(map);
+        </script>
+    </body>
+    </html>
+    """
+
+@app.route("/tiles_db")
+def index2():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Tile Map</title>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+        <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+        <style>#map{height:100vh;}</style>
+    </head>
+    <body>
+        <div id="map"></div>
+        <script>
+            var map = L.map('map').setView([8, 13], 5);
+            L.tileLayer('/tiles_db/{z}/{x}/{y}.png', {
                 maxZoom: 20,
                 minZoom: 5,
                 tileSize: 256,
@@ -216,7 +244,7 @@ def get_elevation_decoder():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
+################################################################################
 @app.route("/tiles/<int:z>/<int:x>/<int:y>.png")
 def serve_tile(z, x, y):
     """Serve individual terrain tiles."""
@@ -225,6 +253,25 @@ def serve_tile(z, x, y):
         return send_from_directory(tiles_dir, f"{z}/{x}/{y}.png")
     except Exception as e:
         return jsonify({"error": str(e)}), 404
+    
+
+################################################################################
+
+@app.route("/tiles_db/<int:z>/<int:x>/<int:y>.png")
+def serve_tile_from_db(z, x, y):
+    """Serve individual terrain tiles from database."""
+    try:
+        tileset ="tiles" # "tiles_elevation" or "tiles_texture" depending on the tileset you want to serve
+        db_con = sqlite3.connect(os.path.join(TEMP_DIR, "tiles.db"))
+        db_cursor = db_con.cursor()
+
+        return serve_image_from_tileset_db(db_cursor, tileset, x, y, z)
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+    
+
+################################################################################
 
 
 @app.route("/generate_elevation_tiles")
@@ -237,7 +284,9 @@ def generate_elevation_tiles():
         # my_channels = 1
         settings = {
             "useBuffer": True,
-            "num_threads": 1,  
+            "num_threads": 1,
+            "tiles_save_db": True,
+            "tiles_db_name": "tiles.db", 
         }
 
         filename = "RGB.byte.tif"
@@ -261,6 +310,8 @@ def generate_texture_tiles():
         settings = {
             "useBuffer": True,
             "num_threads": 1,  
+            "tiles_save_db": True,
+            "tiles_db_name": "tiles.db", 
         }
 
         filename = "RGB.byte.tif"
@@ -305,6 +356,8 @@ def generate_tiles():
         settings = {
             "useBuffer": True,
             "num_threads": 1,  # 1
+            "tiles_save_db": True,
+            "tiles_db_name": "tiles.db", 
         }
 
         # my_encoder = "greyscale"

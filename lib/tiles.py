@@ -5,6 +5,8 @@ from rasterio.windows import from_bounds
 from PIL import Image
 import os
 from numpy import ndarray
+import sqlite3
+
 from typing import Literal
 
 from .io import *
@@ -173,6 +175,11 @@ class TileGenerator:
         self.filename = filename
         self.mode = mode
 
+        self.tiles_save_db = settings.get("tiles_save_db", False) 
+        self.tiles_db_name = settings.get("tiles_db_name", "tiles.db")
+        self.tiles_db_con = None
+        self.tiles_db_cursor = None
+
         self.output_dir = output_dir
         self.tiles_name = "tiles"
         self.tiles_data = None
@@ -185,6 +192,10 @@ class TileGenerator:
         self._tile_shape = (512, 512)
         self.zoom_levels = [1, 2, 3, 4]
         self.settings = settings
+
+        if self.tiles_save_db:
+            self._check_tiles_db(self.output_dir)
+            self._connect_tiles_db()
 
         self._check_mode()
         self._update_tiles_path()
@@ -200,6 +211,7 @@ class TileGenerator:
 
         self.reload_raster_data()
 
+    
     def set_zoom(self, zoom_levels: list[int]):
         self.zoom_levels = zoom_levels
 
@@ -306,9 +318,17 @@ class TileGenerator:
 
                 # TODO: add a new method to save the tiles into an sqlite database (e.g., MBTiles format)
                 # instead of saving as individual png files, for better performance and easier management of large number of tiles
-                path = f"{self.tiles_path}/{z}/{x}"
-                os.makedirs(path, exist_ok=True)
-                img.save(f"{path}/{y}.png")
+                # path = f"{self.tiles_path}/{z}/{x}"
+                # os.makedirs(path, exist_ok=True)
+                # img.save(f"{path}/{y}.png")
+                if self.tiles_save_db and self.tiles_db_con is not None:
+                    save_tile_db(img, self.tiles_db_cursor, self.tiles_name, x, y, z)
+                else:
+                    # fallback to plain directory saving if db saving is not implemented
+                    save_tile_directory(img, self.tiles_path, x, y, z)
+
+        self._commit_tiles_db()
+        self.clean_garbage()
 
     def reload_raster_data(self):
         self._reset_tiles_data()
@@ -351,7 +371,7 @@ class TileGenerator:
         imgData = read_image_from_path(self.texture_name, self.raster_dir)
 
         self.out_raster_name = self.raster_name
-        
+
         if self.useBuffer:
             self.out_raster_path = None
         else:
@@ -420,6 +440,10 @@ class TileGenerator:
                 for name in dirs:
                     os.rmdir(os.path.join(root, name))
             print(f"Cleaned existing tiles in {self.tiles_path}")
+
+        if self.tiles_save_db and self.tiles_db_con is not None:
+            # Clean the tileset from the database if it exists
+            delete_tileset_from_db(self.tiles_db_cursor, self.tiles_name)
         else:
             print(f"No existing tiles to clean in {self.tiles_path}")
 
@@ -427,3 +451,50 @@ class TileGenerator:
         validExtension = check_file_extension(self.filename, self.mode)
         if not validExtension:
             raise ValueError(f"Invalid mode: {self.mode} for file: {self.filename}")
+        
+    
+    def _check_tiles_db(self, db_dir: str):
+
+        self.db_path = os.path.join(db_dir, self.tiles_db_name)
+
+        if not os.path.exists(self.db_path):
+            # create a new db file
+            open(self.db_path, 'a').close()
+            print(f"Created new tiles database at: {self.db_path}")
+
+    def _connect_tiles_db(self):
+        self.tiles_db_con = sqlite3.connect(self.db_path)
+        self.tiles_db_cursor = self.tiles_db_con.cursor()
+        self.tiles_db_cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tiles (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                tileset   TEXT    NOT NULL,
+                zoom_level INTEGER NOT NULL,
+                tile_column INTEGER NOT NULL,
+                tile_row   INTEGER NOT NULL,
+                tile_data  BLOB    NOT NULL,
+                UNIQUE (tileset, zoom_level, tile_column, tile_row)
+            )
+        """)
+        self.tiles_db_con.commit()
+
+    def _close_tiles_db(self):
+        if self.tiles_db_con is not None:
+            self.tiles_db_con.close()
+            self.tiles_db_con = None
+            self.tiles_db_cursor = None
+
+    def _commit_tiles_db(self):
+        if self.tiles_db_con is not None:
+            self.tiles_db_con.commit()
+
+    def clean_garbage(self):
+        if self.useBuffer and self.BufferData is not None:
+             # Close the MemoryFile to avoid memory leaks
+             self.BufferData.close()
+             self.BufferData = None
+
+        if self.tiles_save_db and self.tiles_db_con is not None:
+            self._close_tiles_db()
+           
+       
