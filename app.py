@@ -4,7 +4,7 @@ TerrainTiles Flask Application
 A simple Flask API for terrain tiles manipulation.
 """
 import time
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, g
 import os
 import json
 import re
@@ -257,16 +257,25 @@ def serve_tile(z, x, y):
 
 ################################################################################
 
+def get_tiles_db():
+    """Return a per-request SQLite connection, creating it once per request via Flask g."""
+    if "tiles_db" not in g:
+        g.tiles_db = sqlite3.connect(os.path.join(TEMP_DIR, "tiles.db"))
+    return g.tiles_db
+
+@app.teardown_appcontext
+def close_tiles_db(exc):
+    db = g.pop("tiles_db", None)
+    if db is not None:
+        db.close()
+
 @app.route("/tiles_db/<int:z>/<int:x>/<int:y>.png")
 def serve_tile_from_db(z, x, y):
     """Serve individual terrain tiles from database."""
     try:
-        tileset ="tiles" # "tiles_elevation" or "tiles_texture" depending on the tileset you want to serve
-        db_con = sqlite3.connect(os.path.join(TEMP_DIR, "tiles.db"))
-        db_cursor = db_con.cursor()
-
+        tileset = "tiles"  # "tiles_elevation" or "tiles_texture"
+        db_cursor = get_tiles_db().cursor()
         return serve_image_from_tileset_db(db_cursor, tileset, x, y, z)
-    
     except Exception as e:
         return jsonify({"error": str(e)}), 404
     
