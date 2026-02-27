@@ -3,7 +3,7 @@ TerrainTiles Flask Application
 
 A simple Flask API for terrain tiles manipulation.
 """
-
+import time
 from flask import Flask, request, jsonify, send_from_directory
 import os
 import json
@@ -233,8 +233,15 @@ def generate_elevation_tiles():
         _TEMP_DIR = os.path.join(os.path.dirname(__file__), "Temp")
         _DEMOS_DIR = os.path.join(os.path.dirname(__file__), "demos")
 
+        # my_encoder = "terrain-rgb"
+        # my_channels = 1
+        settings = {
+            "useBuffer": True,
+            "num_threads": 1,  
+        }
+
         filename = "RGB.byte.tif"
-        tileGenerator = tiles.TileGenerator(_DEMOS_DIR, filename, _TEMP_DIR)
+        tileGenerator = tiles.TileGenerator(_DEMOS_DIR, filename, _TEMP_DIR, mode="tif", settings=settings)
         tileGenerator.set_tiles_name("tiles_elevation")
 
         tileGenerator.set_zoom([1, 2, 3])
@@ -251,8 +258,13 @@ def generate_texture_tiles():
         _TEMP_DIR = os.path.join(os.path.dirname(__file__), "Temp")
         _DEMOS_DIR = os.path.join(os.path.dirname(__file__), "demos")
 
+        settings = {
+            "useBuffer": True,
+            "num_threads": 1,  
+        }
+
         filename = "RGB.byte.tif"
-        tileGenerator = tiles.TileGenerator(_DEMOS_DIR, filename, _TEMP_DIR)
+        tileGenerator = tiles.TileGenerator(_DEMOS_DIR, filename, _TEMP_DIR, mode="tif", settings=settings)
         tileGenerator.set_tiles_name("tiles_texture")
 
         # read from a .png texture
@@ -261,7 +273,9 @@ def generate_texture_tiles():
         #     "X_MIN": -70.46993753408448,
         #     "X_MAX": -70.39734766708911,
         #     "Y_MIN": 18.320038340921577,
-        #     "Y_MAX": 18.37178547912261
+        #     "Y_MAX": 18.37178547912261,
+        #     "useBuffer": True,
+        #     "num_threads": 1,  
         #     }
 
         # tileGenerator = tiles.TileGenerator(_DEMOS_DIR, filename, _TEMP_DIR, mode="png", settings = settings)
@@ -286,9 +300,12 @@ def generate_tiles():
         my_channels = None
         # my_channels = [1, 2, 3]
 
-        # my_encoder = "terrain-rgb"
-        # my_channels = 1
-        settings = {}
+        my_encoder = "terrain-rgb"
+        my_channels = 1
+        settings = {
+            "useBuffer": True,
+            "num_threads": 1,  # 1
+        }
 
         # my_encoder = "greyscale"
         # Z_MIN = 121.59725952148438
@@ -301,15 +318,21 @@ def generate_tiles():
         #     "bScaler": 1
         # }
 
+        tic = time.time()
+        ##-------------------------------------------------
 
         filename = "RGB.byte.tif"
         # filename = "Bani.tif"
-        tileGenerator = tiles.TileGenerator(_DEMOS_DIR, filename, _TEMP_DIR)
-        tileGenerator.set_zoom([1, 2, 3])
+        tileGenerator = tiles.TileGenerator(_DEMOS_DIR, filename, _TEMP_DIR, mode="tif", settings=settings)
+        tileGenerator.set_zoom([1, 2, 3, 4, 5, 6, 7, 8, 9, 10,11,12])
         # tileGenerator.set_zoom([5,12,13,14,15,16,17,18,19,20])
         # tileGenerator.set_zoom([5,12,13,14,15,16,17,18])
         # tileGenerator.set_zoom([1, 2, 3, 4, 5, 6, 7, 8, 9, 10,11,12,13,14])
         tileGenerator.save_tiles_png(indexes=my_channels, encoder=my_encoder, encoder_settings=settings)
+        
+        ##-------------------------------------------------
+        toc = time.time()
+        elapsed = toc - tic
 
         _tiledata = tileGenerator.get_tiles_data()
         _tilecount = tileGenerator.get_tiles_count()
@@ -321,8 +344,7 @@ def generate_tiles():
             print(f"Tile data sample (first tile): {_tiledata[0] if _tiledata else 'No tile data'}")
             print(f"Source metadata: {_src_metadata}")
             print(f"Output metadata: {_out_metadata}")
-            print(f"Total tiles generated: {_tilecount}")
-
+            print(f"Total tiles generated: {_tilecount} in {elapsed:.2f} seconds")
 
         return (
             jsonify(

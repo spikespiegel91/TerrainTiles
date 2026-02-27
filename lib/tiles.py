@@ -45,43 +45,80 @@ def read_tiledata_from_raster(
     if not check_path(src_path):
         raise ValueError(" Invalid file, file does not exist")
 
-    fill_value = kwargs.get("fill_value", 0)
-    boundless = kwargs.get("boundless", True)
+    # fill_value = kwargs.get("fill_value", 0)
+    # boundless = kwargs.get("boundless", True)
     # out_shape = kwargs.get("out_shape", (256, 256))
 
     with rasterio.open(src_path) as src:
 
-        if (tile_window is None) or (out_shape is None):
-            # la ventana de la tila tiene que ser cuadrada para
-            # que el out_shape de 256x256 estandar de tilas funcione correctamente
-            # sin distorsionar la imagen
-            src_window = from_bounds(*src.bounds, transform=src.transform)
-            min_size = min(src_window.width, src_window.height)
-
-            tile_window = [src_window.crop(min_size, min_size)]
-            out_shape = (
-                int(min_size),
-                int(min_size),
-            )  # shape(tile_window[0].round_shape())
-
-        data = []
-        for tile in tile_window:
-            # print(f"Reading data for tile window: {tile}")
-
-            tile_data = src.read(
-                indexes=indexes,
-                window=tile,
-                out_shape=out_shape,
-                boundless=boundless,  # Read data even if window is partially outside raster
-                fill_value=fill_value,  # Fill empty areas with specified fill value
-                # resampling=rasterio.enums.Resampling.bilinear
-                resampling=rasterio.enums.Resampling.cubic,
-                **kwargs,
-            )
-            data.append(tile_data)
+        data = get_tiledata_from_src(src, indexes, tile_window, out_shape, **kwargs)
 
     return data
 
+def read_tiledata_from_buffer(
+    memfile: rasterio.io.MemoryFile,
+    indexes: int | list = 1,
+    tile_window: list[Window] | None = None,
+    out_shape: tuple | None = (256, 256),
+    **kwargs,
+):
+    if memfile is None:
+        raise ValueError("Buffer data is not available")
+    
+
+    # This does not work, since the read() method of MemoryFile
+    # is not the same as the read() method of DatasetReader
+    # I need to open the memfile as a dataset
+    # data_ = get_tiledata_from_src(memfile, indexes, tile_window, out_shape, **kwargs)
+
+    with memfile.open() as tmp_src:
+        data = get_tiledata_from_src(tmp_src, indexes, tile_window, out_shape, **kwargs)
+
+    return data
+
+    # return get_tiledata_from_src(memfile.read(), indexes, tile_window, out_shape, **kwargs)
+
+def get_tiledata_from_src(
+    src: rasterio.io.DatasetReader,
+    indexes: int | list = 1,
+    tile_window: list[Window] | None = None,
+    out_shape: tuple | None = (256, 256),
+    **kwargs,
+):
+    fill_value = kwargs.get("fill_value", 0)
+    boundless = kwargs.get("boundless", True)
+
+    if (tile_window is None) or (out_shape is None):
+        # la ventana de la tila tiene que ser cuadrada para
+        # que el out_shape de 256x256 estandar de tilas funcione correctamente
+        # sin distorsionar la imagen
+        src_window = from_bounds(*src.bounds, transform=src.transform)
+        min_size = min(src_window.width, src_window.height)
+
+        tile_window = [src_window.crop(min_size, min_size)]
+        out_shape = (
+            int(min_size),
+            int(min_size),
+        )  # shape(tile_window[0].round_shape())
+
+    data = []
+    for tile in tile_window:
+        # print(f"Reading data for tile window: {tile}")
+
+        tile_data = src.read(
+            indexes=indexes,
+            window=tile,
+            out_shape=out_shape,
+            boundless=boundless,  # Read data even if window is partially outside raster
+            fill_value=fill_value,  # Fill empty areas with specified fill value
+            # resampling=rasterio.enums.Resampling.bilinear
+            resampling=rasterio.enums.Resampling.cubic,
+            **kwargs,
+        )
+        data.append(tile_data)
+
+    return data
+    
 
 def get_tiles(bounds, bounds_crs, zoom_levels=[1, 2]):
     # GEODETIC_CRS = "EPSG:4326"
@@ -142,7 +179,8 @@ class TileGenerator:
         # self.raster_path = get_filepath(raster_dir, raster_name)
         # self.Geo_4326_reprojected_tag = 'geo_4326'
         # self.Mercator_3857_reprojected_tag = 'mercator_3857'
-        self.useBuffer = False
+        self.useBuffer = settings.get("useBuffer", False)
+        self.num_threads = settings.get("num_threads", 2)  # 1
         # self._tile_shape = (256, 256)
         self._tile_shape = (512, 512)
         self.zoom_levels = [1, 2, 3, 4]
@@ -185,18 +223,17 @@ class TileGenerator:
             self._get_tiles_data()
         return len(self.tiles_data)
 
-    
     def generate_elevation_tiles(self):
         self.save_tiles_png(indexes=1, encoder="terrain-rgb")
         return
-    
+
     def generate_texture_tiles(self):
         self.save_tiles_png(indexes=None, encoder=None)
         return
-    
+
     def save_tiles_png(
         self,
-        indexes=1, # 1, None, [1,2,3]
+        indexes=1,  # 1, None, [1,2,3]
         encoder: None | Literal["terrain-rgb", "greyscale"] = None,
         encoder_settings: dict | None = None,
     ):
@@ -207,7 +244,7 @@ class TileGenerator:
             indexes (int, optional): _description_. Defaults to 1.
             encoder_settings (dict | None, optional): _description_. Defaults to None.
 
-            For elevation data: 
+            For elevation data:
             indexes = 1
             encoder = "terrain-rgb"
 
@@ -217,7 +254,7 @@ class TileGenerator:
 
 
         """
-        
+
         self._clean_tiles_output()
 
         if self.tiles_data is None:
@@ -229,16 +266,28 @@ class TileGenerator:
         num_windows = len(all_windows)
         batch_size = min(max_batch_size, num_windows)
 
+        # TODO: this could be parallelized with multiprocessing or concurrent.futures for faster processing of large number of tiles
         for i in range(0, num_windows, batch_size):
             batch_windows = all_windows[i : i + batch_size]
 
-            sliced_rasterdata = read_tiledata_from_raster(
-                self.out_raster_name,
-                self.output_dir,
-                indexes,
-                tile_window=batch_windows,
-                out_shape=self._tile_shape,
-            )
+            # [X]FIXME: in buffer mode, this keeps trying to read the out raster from path
+            # instead, it should read from the buffer data directly (self.BufferData)
+            if self.useBuffer and self.BufferData is not None:
+
+                sliced_rasterdata = read_tiledata_from_buffer(
+                    self.BufferData,
+                    indexes,
+                    tile_window=batch_windows,
+                    out_shape=self._tile_shape,
+                )
+            else:
+                sliced_rasterdata = read_tiledata_from_raster(
+                    self.out_raster_name,
+                    self.output_dir,
+                    indexes,
+                    tile_window=batch_windows,
+                    out_shape=self._tile_shape,
+                )
 
             img_all = [
                 (index, self._encode_data(slicedata, encoder, encoder_settings))
@@ -255,6 +304,8 @@ class TileGenerator:
                 x = t["x"]
                 y = t["y"]
 
+                # TODO: add a new method to save the tiles into an sqlite database (e.g., MBTiles format)
+                # instead of saving as individual png files, for better performance and easier management of large number of tiles
                 path = f"{self.tiles_path}/{z}/{x}"
                 os.makedirs(path, exist_ok=True)
                 img.save(f"{path}/{y}.png")
@@ -299,31 +350,31 @@ class TileGenerator:
 
         imgData = read_image_from_path(self.texture_name, self.raster_dir)
 
+        self.out_raster_name = self.raster_name
+        
         if self.useBuffer:
-            # TODO
-            # Implement logic to reproject raster to geographic coordinates and store in buffer
-            pass
+            self.out_raster_path = None
         else:
-            self.out_raster_name = self.raster_name
-            self.out_raster_path = os.path.join(self.output_dir, self.raster_name)
+            self.out_raster_path = os.path.join(self.output_dir, self.out_raster_name)
 
-            self.out_raster_metadata = data2GeoTif(imgData, self.out_raster_path, latlongBounds)
-            self.BufferData = None
+        self.BufferData, self.out_raster_metadata = data2GeoTif(imgData, self.out_raster_path, latlongBounds, self.out_raster_name, self.useBuffer)
+        # self.BufferData = None
 
         return
 
     def _reproject_lnglat_4326(self):
 
-        if self.useBuffer:
-            # TODO
-            # Implement logic to reproject raster to geographic coordinates and store in buffer
-            pass
-        else:
-            self.out_raster_path, self.out_raster_name = reproject_raster2Geographic(
-                self.raster_name, self.raster_dir, self.output_dir
-            )
-            self.out_raster_metadata = get_raster_metadata(self.out_raster_name, self.output_dir)
-            self.BufferData = None
+        settings = {
+            "useBuffer": self.useBuffer,
+            "num_threads": self.num_threads, # 2,  # 1
+        }
+
+        self.out_raster_path, self.out_raster_name, self.BufferData, self.out_raster_metadata = (
+            reproject_raster2Geographic(self.raster_name, self.raster_dir, self.output_dir, **settings)
+        )
+
+        # self.out_raster_metadata = get_raster_metadata(self.out_raster_name, self.output_dir)
+        # self.BufferData = None
 
     def _get_tiles_data(self):
 
@@ -372,9 +423,7 @@ class TileGenerator:
         else:
             print(f"No existing tiles to clean in {self.tiles_path}")
 
-
     def _check_mode(self):
         validExtension = check_file_extension(self.filename, self.mode)
         if not validExtension:
             raise ValueError(f"Invalid mode: {self.mode} for file: {self.filename}")
-

@@ -21,8 +21,10 @@ def get_raster_metadata(
         raise ValueError(" Invalid file, file does not exist")
 
     with rasterio.open(src_path) as src:
+        return parse_metadata_from_src(src)
 
-        metadata = {
+def parse_metadata_from_src(src):
+    return  {
             "driver": src.driver,
             "crs": src.crs,
             "width": src.width,
@@ -33,10 +35,6 @@ def get_raster_metadata(
             "transform": src.transform,  # Affine transformation matrix for georeferencing pixels to geographic coordinates
             "nodata": src.nodata if hasattr(src, "nodata") else None,
         }
-
-    return metadata
-
-
 
 def transform_bounds(src_crs, dst_crs, bounds):
     return rio_transform_bounds(src_crs, dst_crs, *bounds)
@@ -122,6 +120,7 @@ def reproject_raster(
     dst_crs: str = "EPSG:3857",
     out_prefix: str | None = None,
     useBuffer: bool = False,
+    num_threads: int = 2, #1
 ) -> str:
 
     _valid_ext = ["tif"]
@@ -142,6 +141,9 @@ def reproject_raster(
 
     out_filename = add_prefix_to_filename(filename, out_prefix)
     out_path = get_filepath(output_path, out_filename)
+    out_memfile = None
+    out_metadata = None
+
 
     with rasterio.open(src_path) as src:
 
@@ -156,22 +158,23 @@ def reproject_raster(
         # FIXME: este raster reproyectado se podria guardar en un buffer en memoria en lugar de en disco,
         # para luego generar las tilas a partir de ese buffer, esto podria ser mas rapido pero podria consumir mucha memoria dependiendo del tamaño del raster
         if useBuffer:
-            # TODO: revisar y arreglar esto para que funcione desde buffer
-
-            with rasterio.MemoryFile(filename=out_filename) as memfile:
-                with memfile.open(**kwargs) as dst:
-                    for i in range(1, src.count + 1):
-                        reproject(
-                            source=rasterio.band(src, i),
-                            destination=rasterio.band(dst, i),
-                            src_transform=src.transform,
-                            src_crs=src.crs,
-                            dst_transform=transform,
-                            dst_crs=dst_crs,
-                            resampling=rasterio.enums.Resampling.cubic,
-                        )
-                return memfile, out_filename
-
+            # Do NOT use MemoryFile as a context manager here — doing so would close it on exit,
+            # making it impossible to open later. Only use `with` when opening it as a dataset.
+            out_memfile = rasterio.MemoryFile(filename=out_filename)
+            with out_memfile.open(**kwargs) as dst:
+                for i in range(1, src.count + 1):
+                    reproject(
+                        source=rasterio.band(src, i),
+                        destination=rasterio.band(dst, i),
+                        src_transform=src.transform,
+                        src_crs=src.crs,
+                        dst_transform=transform,
+                        dst_crs=dst_crs,
+                        resampling=rasterio.enums.Resampling.cubic,
+                        num_threads=num_threads,
+                    )
+                
+                out_metadata = parse_metadata_from_src(dst)
         
         else:
             with rasterio.open(out_path, "w", **kwargs) as dst:
@@ -184,18 +187,25 @@ def reproject_raster(
                         dst_transform=transform,
                         dst_crs=dst_crs,
                         resampling=rasterio.enums.Resampling.cubic,
+                        num_threads=num_threads,
                     )
+                
+                out_metadata = parse_metadata_from_src(dst)
+                
 
-    return out_path, out_filename
+    return out_path, out_filename, out_memfile, out_metadata
 
 
 def reproject_raster2Mercator(
     filename: str,
     dirpath: str = "/Temp",
     output_path: str = "/Temp",
+    useBuffer: bool = False,
+    num_threads: int = 2, #1
 ):
     return reproject_raster(
-        filename, dirpath, output_path, dst_crs="EPSG:3857", out_prefix="mercator_3857"
+        filename, dirpath, output_path, dst_crs="EPSG:3857", out_prefix="mercator_3857",
+        useBuffer=useBuffer, num_threads=num_threads
     )
 
 
@@ -203,8 +213,11 @@ def reproject_raster2Geographic(
     filename: str,
     dirpath: str = "/Temp",
     output_path: str = "/Temp",
+    useBuffer: bool = False,
+    num_threads: int = 2, #1
 ):
     return reproject_raster(
-        filename, dirpath, output_path, dst_crs="EPSG:4326", out_prefix="geo_4326"
+        filename, dirpath, output_path, dst_crs="EPSG:4326", out_prefix="geo_4326",
+        useBuffer=useBuffer, num_threads=num_threads
     )
 

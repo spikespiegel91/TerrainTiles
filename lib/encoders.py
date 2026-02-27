@@ -6,6 +6,8 @@ import numpy as np
 from numpy import ndarray
 from typing import Literal
 
+from .carto import parse_metadata_from_src
+
 
 def elevation2terrainRGB(elevation_data: ndarray) -> Image.Image:
 
@@ -87,7 +89,7 @@ def data2img(
         return img
 
 
-def data2GeoTif(data: ndarray, out_path: str, latlongBounds: dict) -> dict:
+def data2GeoTif(data: ndarray, out_path: str, latlongBounds: dict, out_filename:str = None, useBuffer: bool = False) -> dict:
 
     img_bands, img_h, img_w = data.shape
 
@@ -108,23 +110,42 @@ def data2GeoTif(data: ndarray, out_path: str, latlongBounds: dict) -> dict:
     # img_crs = GEODETIC_CRS
     _GEODETIC_CRS = "EPSG:4326"
 
-    with rasterio.open(
-        out_path,
-        "w",
-        driver="GTiff",
-        height=img_h,
-        width=img_w,
-        count=img_bands,  # 4,
-        dtype=img_dtype,
-        crs=_GEODETIC_CRS,
-        transform=img_transform,
-    ) as dst:
-        dst.write(data)
-        metadata = dst.meta
+    if useBuffer:
+        
+        out_memfile = rasterio.MemoryFile(filename=out_filename)
+        with out_memfile.open(
+            driver="GTiff",
+            height=img_h,
+            width=img_w,
+            count=img_bands,  # 4,
+            dtype=img_dtype,
+            crs=_GEODETIC_CRS,
+            transform=img_transform,
+        ) as dst:
+            dst.write(data)
+            parsed_data = parse_metadata_from_src(dst)
+    else:
+
+        with rasterio.open(
+            out_path,
+            "w",
+            driver="GTiff",
+            height=img_h,
+            width=img_w,
+            count=img_bands,  # 4,
+            dtype=img_dtype,
+            crs=_GEODETIC_CRS,
+            transform=img_transform,
+        ) as dst:
+            dst.write(data)
+            parsed_data = parse_metadata_from_src(dst)
+
+    return out_memfile, parsed_data
+        
 
     # with rasterio.open(out_path) as src:
     #     data = src.read()
     #     show(data, transform=src.transform)
     #     print(f"Successfully read and displayed georeferenced image: {out_path}")
 
-    return metadata
+    # return metadata
